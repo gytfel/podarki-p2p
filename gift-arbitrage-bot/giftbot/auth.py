@@ -44,7 +44,8 @@ async def connect(client) -> None:
     except (asyncio.TimeoutError, OSError) as exc:
         await client.disconnect()
         raise AuthSetupError(
-            f"Нет связи с Telegram ({type(exc).__name__}). Проверьте интернет на сервере или настройку PROXY"
+            f"Нет связи с Telegram ({type(exc).__name__}). Проверьте интернет на сервере "
+            "(настройка PROXY на связь с Telegram-аккаунтом не влияет)"
         ) from exc
 
 
@@ -77,7 +78,10 @@ class AuthProvider:
         self._cfg.require("api_id", "api_hash")
         from telethon import TelegramClient
 
-        self._client = TelegramClient(str(self._cfg.session_path), self._cfg.api_id, self._cfg.api_hash)
+        # входящие обновления аккаунта боту не нужны: без них меньше записей в сессию и поводов для разрыва
+        self._client = TelegramClient(
+            str(self._cfg.session_path), self._cfg.api_id, self._cfg.api_hash, receive_updates=False
+        )
         try:
             await connect(self._client)
         except AuthSetupError:
@@ -95,6 +99,12 @@ class AuthProvider:
             return self._overrides[market]
         if self._client is None:
             raise AuthError(market, "клиент Telegram не запущен")
+        if not self._client.is_connected():
+            # Telethon бросает переподключение после нескольких неудач — иначе вход не обновится до перезапуска
+            try:
+                await connect(self._client)
+            except AuthSetupError as exc:
+                raise AuthError(market, str(exc)) from exc
         app = WEBAPPS[market]
         try:
             init_data = await self._request(app)

@@ -44,15 +44,23 @@ git clone -b fix/scanner-bot-review https://github.com/gytfel/podarki-p2p.git ~/
 bash ~/podarki-p2p/gift-arbitrage-bot/install.sh
 ```
 
-Если вы вошли не как root (например, `ubuntu`), добавляйте `sudo` перед `apt-get` и `bash`.
-Когда исправления окажутся в ветке `main`, `-b fix/scanner-bot-review` можно не писать.
+- Вошли не как root (например, `ubuntu`)? Добавляйте `sudo` перед `apt-get`, `bash` и всеми
+  командами ниже: `sudo nano …`, `sudo systemctl …`, `sudo journalctl …`, `sudo rm …`.
+  Если команды `sudo` нет, сначала выполните `su -` (с минусом) и вводите команды как есть.
+- `apt-get` пишет «Could not get lock»? Сервер только что создан и обновляется сам: подождите
+  2–5 минут и повторите (`install.sh` умеет ждать сам).
+- Когда исправления окажутся в ветке `main`, `-b fix/scanner-bot-review` можно не писать.
 
 **3. Ответьте на вопросы скрипта.** Он попросит по очереди:
 
 - токен бота, `API_ID` и `API_HASH`;
 - отправить своему боту `/start` — так скрипт узнает ваш chat_id;
-- номер телефона и код из Telegram — вход делается один раз, сессия хранится на сервере;
+- номер телефона **вашего аккаунта** (не токен бота) и код из Telegram — вход делается один раз,
+  сессия хранится на сервере;
 - открыть @portals и @Tonnel_Network_bot с этого аккаунта.
+
+Ошиблись в токене, `API_ID` или `API_HASH` — скрипт сам предложит ввести их заново. Прервать
+установку можно в любой момент через Ctrl+C и потом запустить `install.sh` ещё раз.
 
 Потом скрипт проверит связь с ботом и площадками (бот пришлёт тестовое сообщение) и запустит
 сканер. Он работает круглосуточно и сам поднимается после перезагрузки сервера — окно SSH
@@ -78,8 +86,18 @@ systemctl restart giftbot              # применить изменения
 cd ~/podarki-p2p && git pull && bash gift-arbitrage-bot/install.sh
 ```
 
+Если `git pull` ругается на ветку (её удалили после переноса исправлений в `main`):
+
+```bash
+cd ~/podarki-p2p && git fetch origin && git checkout -B main origin/main && bash gift-arbitrage-bot/install.sh
+```
+
 **Войти заново или в другой аккаунт:** `systemctl stop giftbot`, удалите
 `/opt/gift-arbitrage-bot/data/telegram.session` и снова запустите `install.sh`.
+
+Где ниже в README написано `python -m giftbot check` или `python -m giftbot login`, на сервере
+просто снова запустите `bash ~/podarki-p2p/gift-arbitrage-bot/install.sh`: он остановит бота,
+выполнит вход и проверку и запустит бота обратно.
 
 ## Установка на своём компьютере
 

@@ -100,6 +100,50 @@ def test_connect_gives_up_when_telegram_does_not_answer(monkeypatch):
     assert client.disconnected
 
 
+def test_auth_reconnects_after_telegram_dropped_connection(monkeypatch):
+    from giftbot.auth import AuthProvider
+    from conftest import make_config
+
+    class Dropped:  # Telethon перестал переподключаться сам
+        connected = False
+
+        def is_connected(self):
+            return self.connected
+
+        async def connect(self):
+            self.connected = True
+
+    provider = AuthProvider(make_config())
+    provider._client = Dropped()
+
+    async def fake_request(app):
+        return "query_id=1"
+
+    monkeypatch.setattr(provider, "_request", fake_request)
+    assert run(provider.get("portals")) == "tma query_id=1"
+    assert provider._client.connected
+
+
+def test_login_phone_prompt_rejects_bot_token(monkeypatch, capsys):
+    from giftbot.__main__ import ask_phone
+
+    answers = iter(["123456789:AAAbbbcccdddeeefffggghhhiiijjjkkklll", "+7 999 123-45-67"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    assert ask_phone() == "+7 999 123-45-67"
+    assert "не токен бота" in capsys.readouterr().out
+
+
+def test_ctrl_c_is_not_reported_as_success(monkeypatch, tmp_path):
+    import giftbot.__main__ as cli
+
+    async def interrupted(cfg):
+        raise KeyboardInterrupt
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setitem(cli.COMMANDS, "check", interrupted)
+    assert cli.main(["check", "--env", str(tmp_path / "missing.env")]) == 130
+
+
 def test_manual_auth_gets_portals_prefix():
     assert normalize_override("portals", "query_id=1") == "tma query_id=1"
     assert normalize_override("portals", "tma query_id=1") == "tma query_id=1"

@@ -8,7 +8,8 @@ from .markets.base import AuthError, MarketError, RateLimited, SchemaError
 HINTS = {
     SchemaError: "Похоже, площадка обновила API. Посмотрите лог data/logs/giftbot.log и поправьте разбор "
     "в giftbot/markets/{market}.py.",
-    AuthError: "Обновите вход: python -m giftbot login, либо данные авторизации в .env. "
+    AuthError: "Обновите вход: python -m giftbot login (на сервере — снова запустите install.sh), "
+    "либо данные авторизации в .env. "
     "Если ошибка 403 повторяется — запросы может блокировать Cloudflare.",
     RateLimited: "Площадка просит реже: увеличьте POLL_INTERVAL_SEC и MIN_REQUEST_INTERVAL_SEC.",
 }

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import logging
+import re
 import signal
 import sys
 import time
@@ -64,22 +66,50 @@ async def cmd_login(cfg: Config) -> int:
     from telethon import TelegramClient
 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(str(cfg.session_path), cfg.api_id, cfg.api_hash)
+    client = TelegramClient(str(cfg.session_path), cfg.api_id, cfg.api_hash, receive_updates=False)
+    first_login = False
     try:
         await connect(client)
         if not await client.is_user_authorized():
-            print("Введите номер телефона в международном формате (+7…), затем код из Telegram")
+            first_login = True
+            print("Вход в ваш Telegram-аккаунт: номер телефона, затем код из Telegram")
             print("и пароль, если включена двухэтапная проверка.")
-            await client.start()
-    except Exception as exc:  # неверный номер, нет связи с Telegram, неверные API_ID/API_HASH
+            await client.start(
+                phone=ask_phone,
+                code_callback=lambda: input("Код из Telegram: "),
+                password=lambda: getpass.getpass("Пароль двухэтапной проверки: "),
+            )
+        me = await client.get_me()
+        if me.bot:  # бот не может открывать мини-приложения площадок
+            await client.log_out()
+            print("\n❌ Это вход ботом, а нужен ваш аккаунт. Запустите вход ещё раз и введите номер телефона.")
+            return 1
+    except Exception as exc:  # неверный номер или код, нет связи с Telegram, неверные API_ID/API_HASH
         print(f"\n❌ Вход не выполнен: {type(exc).__name__}: {exc}")
         await client.disconnect()
         return 1
-    me = await client.get_me()
     print(f"\n✅ Вход выполнен: {me.first_name}" + (f" (@{me.username})." if me.username else "."))
     print(f"Сессия сохранена в {cfg.session_path}.session — никому её не передавайте.")
     await client.disconnect()
+    if first_login:
+        print("\nОткройте с этого аккаунта мини-приложения @portals и @Tonnel_Network_bot хотя бы по разу.")
+        try:
+            input("Когда откроете, нажмите Enter… ")
+        except EOFError:
+            pass
     return 0
+
+
+PHONE_RE = re.compile(r"\+?[\d\s()-]{7,20}")
+
+
+def ask_phone() -> str:
+    """Номер телефона для входа. Telethon принял бы сюда и токен бота — такой ввод не пропускаем."""
+    while True:
+        value = input("Номер телефона (+7…): ").strip()
+        if PHONE_RE.fullmatch(value):
+            return value
+        print("Нужен номер телефона вашего Telegram-аккаунта, например +79991234567 (не токен бота).")
 
 
 async def cmd_chatid(cfg: Config) -> int:
@@ -218,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"❌ {exc}")
         return 2
     except KeyboardInterrupt:
-        return 0
+        return 130  # прерывание — не успех: install.sh не должен идти дальше
 
 
 if __name__ == "__main__":

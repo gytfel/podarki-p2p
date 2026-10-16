@@ -7,19 +7,48 @@
 # спрашивает токены, узнаёт ваш chat_id, входит в Telegram-аккаунт, проверяет площадки и включает
 # автозапуск. Повторный запуск обновляет код и зависимости, а настройки (.env) и папку data/ не трогает.
 set -euo pipefail
+umask 022  # при строгой umask пользователь giftbot не смог бы прочитать код и библиотеки
+# «su» без минуса оставляет PATH без /usr/sbin, где лежат useradd и runuser
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 APP_DIR="${APP_DIR:-/opt/gift-arbitrage-bot}"
 APP_USER="${APP_USER:-giftbot}"
 SERVICE="${SERVICE:-giftbot}"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$APP_DIR/.env"
+UNIT_FILE="/etc/systemd/system/$SERVICE.service"
 PY="$APP_DIR/.venv/bin/python"
+
+TOKEN_RE='^[0-9]{5,}:[A-Za-z0-9_-]{30,}$'
+API_ID_RE='^[0-9]{3,}$'
+API_HASH_RE='^[0-9a-fA-F]{32}$'
+
+# В подсказках пишем sudo, только если скрипт запущен через sudo: на Debian под root его может не быть
+SUDO=""
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then SUDO="sudo "; fi
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m✔ %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m⚠ %s\033[0m\n' "$*"; }
 die()  { printf '\033[31m✘ %s\033[0m\n' "$*" >&2; exit 1; }
 has_systemd() { [ -d /run/systemd/system ]; }
+
+# Ctrl+C, обрыв SSH, kill — это ошибка, а не успех: тогда сработает on_exit
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+restart_on_abort=0  # 1 — бот работал до обновления: если установка прервётся, запускаем его обратно
+on_exit() {
+  local code=$?
+  if [ "$code" -ne 0 ] && [ "$restart_on_abort" = 1 ]; then
+    if systemctl start "$SERVICE" 2>/dev/null; then
+      warn "Установка не завершена — бот снова запущен"
+    else
+      warn "Установка не завершена, бот сейчас не работает. Запустить: ${SUDO}systemctl start $SERVICE"
+    fi
+  fi
+}
+trap on_exit EXIT
 
 # Бот работает от пользователя giftbot из папки установки и с чистым окружением, как под systemd:
 # если проверка прошла здесь, служба увидит то же самое
@@ -50,18 +79,40 @@ ask() {
   done
   env_set "$key" "$value"
 }
+reask() { env_set "$1" ""; ask "$@"; }
 
-[ "$(id -u)" -eq 0 ] || die "Запустите от root: sudo bash install.sh"
+# На только что созданном сервере apt первые минуты занят автообновлением
+apt_install() {
+  local i err
+  export DEBIAN_FRONTEND=noninteractive
+  for i in $(seq 1 60); do
+    if err=$(apt-get update -qq 2>&1); then break; fi
+    if [ "$i" -eq 60 ]; then
+      printf '%s\n' "$err" >&2
+      die "apt-get update не прошёл — проверьте интернет на сервере и запустите install.sh ещё раз"
+    fi
+    if [ "$i" -eq 1 ]; then
+      warn "apt пока недоступен (на новом сервере он занят автообновлением) — повторяю, это до 10 минут…"
+    fi
+    sleep 10
+  done
+  apt-get -o DPkg::Lock::Timeout=600 install -y -qq "$@" >/dev/null
+}
+
+[ "$(id -u)" -eq 0 ] || die "Запустите от root: sudo bash $SRC_DIR/install.sh (если sudo нет — сначала su -)"
 command -v apt-get >/dev/null || die "Скрипт рассчитан на Ubuntu или Debian (нужен apt-get)"
 [ -f "$SRC_DIR/giftbot/__main__.py" ] || die "Рядом со скриптом нет бота: запускайте install.sh из папки gift-arbitrage-bot"
 
 # ------------------------------------------------------------------ система
 
 step "Системные пакеты"
+packages=()
 if ! command -v python3 >/dev/null || ! python3 -c 'import ensurepip' 2>/dev/null; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq python3 python3-venv >/dev/null
+  packages+=(python3 python3-venv)
+fi
+command -v nano >/dev/null || packages+=(nano)  # редактор для настроек, в минимальных образах его нет
+if [ ${#packages[@]} -gt 0 ]; then
+  apt_install "${packages[@]}"
 fi
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
   || die "Нужен Python 3.10 или новее, в системе $(python3 -V 2>&1). Возьмите VPS с Ubuntu 22.04/24.04 или Debian 12"
@@ -75,11 +126,11 @@ fi
 # ------------------------------------------------------------------ код и зависимости
 
 step "Копирую бота в $APP_DIR"
-if has_systemd && systemctl is-active --quiet "$SERVICE"; then
-  systemctl stop "$SERVICE"
-  ok "Работающий бот остановлен на время обновления"
-  # если обновление прервётся, бот останется выключенным — подскажем, как его вернуть
-  trap '[ $? -eq 0 ] || warn "Бот сейчас не работает. Запустить снова: systemctl start $SERVICE"' EXIT
+if has_systemd && [ -f "$UNIT_FILE" ]; then
+  # останавливаем и бота, который перезапускается после сбоя: две копии не должны делить одну сессию
+  if systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then restart_on_abort=1; fi
+  systemctl stop "$SERVICE" || true
+  ok "Бот остановлен на время обновления"
 fi
 mkdir -p "$APP_DIR"
 if [ "$SRC_DIR" != "$APP_DIR" ]; then
@@ -90,21 +141,28 @@ fi
 ok "Код на месте"
 
 step "Зависимости Python (1–3 минуты)"
-if ! "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+# venv без pip остаётся, если создание прервали — такой пересоздаём
+if ! "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null || ! "$PY" -m pip --version >/dev/null 2>&1; then
   rm -rf "$APP_DIR/.venv"
   python3 -m venv "$APP_DIR/.venv"
 fi
 "$PY" -m pip install -q --disable-pip-version-check --upgrade pip
 "$PY" -m pip install -q --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+# код и библиотеки должен читать пользователь бота, даже если их поставили со строгой umask
+chmod 755 "$APP_DIR"
+find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name data ! -name .env -exec chmod -R a+rX {} +
 ok "Зависимости установлены"
 
 # ------------------------------------------------------------------ настройки
 
 step "Настройки"
 if [ ! -f "$ENV_FILE" ]; then
-  cp "$APP_DIR/.env.example" "$ENV_FILE"
+  install -m 640 -o root -g "$APP_USER" "$APP_DIR/.env.example" "$ENV_FILE"
   ok "Создан $ENV_FILE"
 fi
+# .env читает только бот, менять может только root: в нём ключи от вашего аккаунта
+chown "root:$APP_USER" "$ENV_FILE"
+chmod 640 "$ENV_FILE"
 data_dir=$(env_get DATA_DIR)
 data_dir=${data_dir:-data}
 [[ $data_dir = /* ]] || data_dir="$APP_DIR/$data_dir"
@@ -112,40 +170,50 @@ mkdir -p "$data_dir"
 chown -R "$APP_USER:$APP_USER" "$data_dir"
 chmod 700 "$data_dir"
 
-ask BOT_TOKEN "Токен бота от @BotFather (вида 123456:AA...)" '^[0-9]{5,}:[A-Za-z0-9_-]{30,}$'
-ask API_ID "API_ID с my.telegram.org (число)" '^[0-9]{3,}$'
-ask API_HASH "API_HASH с my.telegram.org (32 символа)" '^[0-9a-fA-F]{32}$'
-# .env читает только бот, менять может только root: в нём ключи от вашего аккаунта
-chown "root:$APP_USER" "$ENV_FILE"
-chmod 640 "$ENV_FILE"
+ask BOT_TOKEN "Токен бота от @BotFather (вида 123456:AA...)" "$TOKEN_RE"
+ask API_ID "API_ID с my.telegram.org (число)" "$API_ID_RE"
+ask API_HASH "API_HASH с my.telegram.org (32 символа)" "$API_HASH_RE"
 
 if [ -z "$(env_get ADMIN_CHAT_ID)" ]; then
   step "Узнаю ваш chat_id"
-  echo "Откройте своего бота в Telegram и отправьте ему /start."
-  out=$(mktemp)
-  run_bot chatid | tee "$out" || true
-  chat_id=$(sed -n 's/.*chat_id: \(-\{0,1\}[0-9]\{1,\}\).*/\1/p' "$out" | tail -n 1)
-  rm -f "$out"
-  if [ -n "$chat_id" ]; then
-    env_set ADMIN_CHAT_ID "$chat_id"
-    ok "ADMIN_CHAT_ID=$chat_id"
-  else
-    warn "Не получилось узнать chat_id автоматически"
-    ask ADMIN_CHAT_ID "Введите chat_id вручную (число)" '^-?[0-9]+$'
-  fi
+  while [ -z "$(env_get ADMIN_CHAT_ID)" ]; do
+    echo "Откройте своего бота в Telegram и отправьте ему /start (жду 2 минуты)."
+    out=$(mktemp)
+    run_bot chatid | tee "$out" || true
+    chat_id=$(sed -n 's/.*chat_id: \(-\{0,1\}[0-9]\{1,\}\).*/\1/p' "$out" | tail -n 1)
+    bad_token=0
+    if grep -qE 'Unauthorized|Not Found' "$out"; then bad_token=1; fi
+    rm -f "$out"
+    if [ -n "$chat_id" ]; then
+      env_set ADMIN_CHAT_ID "$chat_id"
+      ok "ADMIN_CHAT_ID=$chat_id"
+    elif [ "$bad_token" = 1 ]; then
+      warn "Telegram не принял токен бота — введите его ещё раз"
+      reask BOT_TOKEN "Токен бота от @BotFather (вида 123456:AA...)" "$TOKEN_RE"
+    else
+      read -r -p "Сообщение не пришло. Enter — подождать ещё раз, или введите chat_id числом: " answer \
+        || die "Ввод прерван — запустите install.sh ещё раз"
+      answer=$(printf '%s' "$answer" | tr -d '[:space:]')
+      if [[ $answer =~ ^-?[0-9]+$ ]]; then env_set ADMIN_CHAT_ID "$answer"; fi
+    fi
+  done
 fi
 
 # Вход нужен, если данные входа не вписаны в .env вручную. Если вход уже выполнен, login ничего не спрашивает.
 if [ -z "$(env_get PORTALS_AUTH_DATA)" ] || [ -z "$(env_get TONNEL_AUTH_DATA)" ]; then
   step "Вход в Telegram-аккаунт"
-  first_login=0
-  [ -f "$data_dir/telegram.session" ] || first_login=1
-  run_bot login || die "Вход не выполнен — запустите install.sh ещё раз"
-  if [ "$first_login" = 1 ]; then
+  until run_bot login; do
     echo
-    echo "Откройте с этого аккаунта мини-приложения @portals и @Tonnel_Network_bot хотя бы по разу."
-    read -r -p "Когда откроете, нажмите Enter… " _ || true
-  fi
+    echo "Если в ошибке выше есть ApiIdInvalid — неверные API_ID или API_HASH."
+    read -r -p "Enter — попробовать ещё раз, 2 — ввести API_ID и API_HASH заново, q — выйти: " answer || answer=q
+    case $answer in
+      2)
+        reask API_ID "API_ID с my.telegram.org (число)" "$API_ID_RE"
+        reask API_HASH "API_HASH с my.telegram.org (32 символа)" "$API_HASH_RE"
+        ;;
+      q* | Q* | й* | Й*) die "Вход не выполнен — когда будете готовы, запустите install.sh ещё раз" ;;
+    esac
+  done
 fi
 
 # ------------------------------------------------------------------ проверка и запуск
@@ -158,17 +226,21 @@ else
   read -r -p "Всё равно запустить бота? [y/N] " answer || answer=n
   case $answer in
     y* | Y* | д* | Д*) ;;
-    *) die "Исправьте настройки (sudo nano $ENV_FILE) и запустите install.sh ещё раз" ;;
+    *)
+      restart_on_abort=0  # вы сами решили не запускать
+      die "Бот не запущен. Исправьте настройки (${SUDO}nano $ENV_FILE) и запустите install.sh ещё раз"
+      ;;
   esac
 fi
 
 step "Автозапуск"
+restart_on_abort=0
 if ! has_systemd; then
-  warn "systemd не найден. Запустите вручную: cd $APP_DIR && sudo -u $APP_USER .venv/bin/python -m giftbot run"
+  warn "systemd не найден. Запустите вручную: cd $APP_DIR && ${SUDO}runuser -u $APP_USER -- .venv/bin/python -m giftbot run"
   exit 0
 fi
 sed -e "s#/opt/gift-arbitrage-bot#$APP_DIR#g" -e "s#^User=.*#User=$APP_USER#" -e "s#^Group=.*#Group=$APP_USER#" \
-  "$APP_DIR/giftbot.service" > "/etc/systemd/system/$SERVICE.service"
+  "$APP_DIR/giftbot.service" > "$UNIT_FILE"
 systemctl daemon-reload
 systemctl enable --quiet "$SERVICE"
 systemctl restart "$SERVICE"
@@ -183,10 +255,10 @@ ok "Бот работает и сам запустится после перез
 cat <<EOF
 
 Полезные команды:
-  journalctl -u $SERVICE -f              лог в реальном времени (выход: Ctrl+C)
-  sudo systemctl restart $SERVICE        перезапуск (нужен после правки настроек)
-  sudo systemctl stop $SERVICE           остановка
-  sudo nano $ENV_FILE    настройки
+  ${SUDO}journalctl -u $SERVICE -f              лог в реальном времени (выход: Ctrl+C)
+  ${SUDO}systemctl restart $SERVICE        перезапуск (нужен после правки настроек)
+  ${SUDO}systemctl stop $SERVICE           остановка
+  ${SUDO}nano $ENV_FILE    настройки
 Обновление бота:
-  cd $SRC_DIR && git pull && sudo bash install.sh
+  cd $SRC_DIR && git pull && ${SUDO}bash install.sh
 EOF
