@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 
-from ..models import BalanceInfo, Key, Listing, ModelFloor, OwnedGift, normalize, strip_rarity
+from ..models import BalanceInfo, Inventory, Key, Listing, ModelFloor, OwnedGift, normalize, strip_rarity
 from .base import (
     BuyRejected,
     HttpClient,
@@ -76,8 +76,8 @@ class PortalsAdapter(MarketAdapter):
         self._clock = clock
         self._collections: dict[str, _Collection] = {}  # нормализованное имя -> коллекция
         self._names_by_id: dict[str, str] = {}
-        # нормализованное имя коллекции -> (когда загружено, {модель: (как пишет Portals, флор)})
-        self._models: dict[str, tuple[float, dict[str, tuple[str, float]]]] = {}
+        # нормализованное имя коллекции -> (когда загружено, {модель: (как пишет Portals, флор или None)})
+        self._models: dict[str, tuple[float, dict[str, tuple[str, float | None]]]] = {}
 
     # ------------------------------------------------------------ запросы
 
@@ -131,7 +131,7 @@ class PortalsAdapter(MarketAdapter):
         if coll is None:
             return None
         model = (await self._models_for(coll)).get(key[1])
-        return ModelFloor(price=model[1]) if model else None
+        return ModelFloor(price=model[1]) if model and model[1] is not None else None
 
     async def cheapest(self, key: Key, limit: int) -> list[Listing] | None:
         coll = self._collections.get(key[0])
@@ -139,7 +139,8 @@ class PortalsAdapter(MarketAdapter):
             return None
         model = (await self._models_for(coll)).get(key[1])
         if model is None:
-            return []  # этой модели сейчас нет в продаже
+            return None  # модели нет в кэше — запросить нечем
+        # Запрашиваем вживую, даже если по кэшу лотов нет: кэш моделей живёт models_ttl секунд
         params = self._listing_params(limit, "price asc")
         params["collection_ids"] = coll.id
         params["filter_by_models"] = model[0]
@@ -168,8 +169,9 @@ class PortalsAdapter(MarketAdapter):
         except HttpError as exc:  # 4xx: площадка отказала, покупка не прошла
             raise BuyRejected(self.name, str(exc)) from exc
 
-    async def owned(self) -> list[OwnedGift]:
+    async def owned(self) -> Inventory:
         gifts: list[OwnedGift] = []
+        complete = True
         for status in ("listed", "unlisted"):
             for page in range(OWNED_MAX_PAGES):
                 params = {"offset": page * OWNED_PAGE, "limit": OWNED_PAGE, "status": status}
@@ -182,7 +184,10 @@ class PortalsAdapter(MarketAdapter):
                 gifts += parse_items(self.name, data["nfts"], lambda i: self._parse_owned(i, listed), "ваши подарки")
                 if len(data["nfts"]) < OWNED_PAGE:
                     break
-        return gifts
+            else:
+                complete = False
+                log.warning("Portals: в инвентаре больше %d подарков (%s), прочитаны не все", OWNED_PAGE * OWNED_MAX_PAGES, status)
+        return Inventory(gifts, complete)
 
     async def list_for_sale(self, gift: OwnedGift, price: float) -> None:
         payload = {"nft_prices": [{"nft_id": gift.owned_id, "price": format_price(price)}]}
@@ -212,7 +217,7 @@ class PortalsAdapter(MarketAdapter):
 
     # ------------------------------------------------------------ кэш моделей
 
-    async def _models_for(self, coll: _Collection) -> dict[str, tuple[str, float]]:
+    async def _models_for(self, coll: _Collection) -> dict[str, tuple[str, float | None]]:
         cached = self._models.get(normalize(coll.name))
         if cached and self._clock() - cached[0] < self.models_ttl:
             return cached[1]
@@ -220,7 +225,7 @@ class PortalsAdapter(MarketAdapter):
         if not isinstance(data, dict) or not isinstance(data.get("floor_prices"), dict):
             raise SchemaError(self.name, "collections/filters: нет floor_prices в ответе")
         entry = data["floor_prices"].get(coll.short_name)
-        models: dict[str, tuple[str, float]] = {}
+        models: dict[str, tuple[str, float | None]] = {}
         if entry is not None:
             raw_models = entry.get("models") if isinstance(entry, dict) else None
             if not isinstance(raw_models, dict):
@@ -229,7 +234,7 @@ class PortalsAdapter(MarketAdapter):
                 try:
                     price = as_price(self.name, raw_price, f"флор модели {raw_name}")
                 except SchemaError:
-                    continue  # у модели нет лотов
+                    price = None  # у модели нет лотов, но имя нужно для запроса вживую
                 models[normalize(raw_name)] = (strip_rarity(raw_name), price)
         self._models[normalize(coll.name)] = (self._clock(), models)
         return models

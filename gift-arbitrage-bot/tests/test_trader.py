@@ -271,6 +271,24 @@ def test_sale_detected_after_two_checks(world):
     assert world.store.positions(["sold"])
 
 
+def test_truncated_inventory_never_marks_position_sold(world):
+    from giftbot.models import Inventory
+
+    world.arm()
+    world.portals_snipe()
+    world.poll()
+
+    async def truncated():
+        return Inventory([], complete=False)  # подарок мог просто не попасть в выдачу
+
+    world.portals.owned = truncated
+    for _ in range(3):
+        run(world.trader.check_positions())
+    assert world.store.positions(["listed"])
+    assert "Продано" not in world.text()
+    assert "читает не все" in world.bot.sent[-1]
+
+
 def test_unknown_purchase_confirmed_later(world):
     world.arm()
     world.portals.buy_lands = False

@@ -230,8 +230,12 @@ def _load_autobuy(markets: tuple[str, ...]) -> AutobuyConfig:
         m.strip().lower() for m in (_get("AUTOBUY_MARKETS") or "portals").split(",") if m.strip()
     )
     outside = [m for m in buy_markets if m not in markets]
-    if outside:
+    if outside and mode != "off":
         raise ConfigError(f"AUTOBUY_MARKETS: площадки {outside} не включены в MARKETS")
+    # Автопокупка выключена: площадки вне MARKETS не мешают запуску сканера
+    buy_markets = tuple(m for m in buy_markets if m in markets)
+    if mode != "off" and not buy_markets:
+        raise ConfigError("AUTOBUY_MARKETS: укажите хотя бы одну площадку из MARKETS")
     max_price = _float("AUTOBUY_MAX_PRICE_TON", 10, 0)
     daily_limit = _float("AUTOBUY_DAILY_LIMIT_TON", 30, 0)
     if mode != "off" and max_price > daily_limit:

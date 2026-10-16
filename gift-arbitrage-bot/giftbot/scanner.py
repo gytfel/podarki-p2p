@@ -5,7 +5,7 @@
 2. Быстрая оценка по кэшу флоров: есть ли смысл проверять дальше.
 3. Проверка вживую: запрос самых дешёвых лотов этой модели на площадке продажи.
 4. Для межплощадочной сделки — проверка, что лот ещё не купили.
-5. Уведомление. Бот ничего не покупает сам.
+5. Уведомление. Покупает бот только при включённой автопокупке (giftbot/trader.py).
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .config import Config
 from .evaluator import Deal, evaluate, is_anomaly, passes
 from .guard import MarketHealth, hint_for
 from .markets.base import AuthError, MarketAdapter, MarketError
-from .models import Listing
+from .models import Listing, ModelFloor
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -203,7 +203,11 @@ class Scanner:
             if floor is None:
                 continue
             estimate = evaluate(listing, market, floor.price, floor.count, cfg.fees, th)
-            if passes(estimate, th, slack=0.5, check_liquidity=False) or is_anomaly(listing.price, floor.price, th):
+            if (
+                passes(estimate, th, slack=0.5, check_liquidity=False)
+                or is_anomaly(listing.price, floor.price, th)
+                or self._is_own_floor(listing, market, floor)
+            ):
                 candidates.append(estimate)
 
         # 2. Проверка вживую по самым дешёвым лотам модели
@@ -226,6 +230,14 @@ class Scanner:
                 await self.trader.consider(deal, anomaly)
             return deal
         return None
+
+    def _is_own_floor(self, listing: Listing, market: str, floor: ModelFloor) -> bool:
+        """Флор своей площадки и есть этот лот: кэш обновился уже после его появления (Portals грузит
+        модели при первом лоте коллекции). Цену следующего конкурента по кэшу не узнать — нужна проверка вживую."""
+        if market != listing.market or abs(floor.price - listing.price) > 0.005:
+            return False
+        # площадка сообщила, сколько лотов модели в продаже: без лота-кандидата конкурентов слишком мало
+        return floor.count is None or floor.count > self.cfg.thresholds.min_ref_listings
 
     async def _cheapest(self, market: str, listing: Listing) -> list[Listing] | None:
         try:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, unquote
 
-from ..models import BalanceInfo, Key, Listing, ModelFloor, OwnedGift, normalize, strip_rarity
+from ..models import BalanceInfo, Inventory, Key, Listing, ModelFloor, OwnedGift, normalize, strip_rarity
 from .base import (
     AuthError,
     BuyRejected,
@@ -81,6 +81,8 @@ class TonnelAdapter(MarketAdapter):
         self._token_factory = token_factory
         self._floors: dict[Key, _Floor] = {}
         self._collections: dict[str, str] = {}  # нормализованное имя -> как пишет Tonnel
+        # все модели, в том числе без лотов: ключ -> (коллекция, модель) как пишет Tonnel
+        self._models: dict[Key, tuple[str, str]] = {}
 
     # ------------------------------------------------------------ запросы
 
@@ -121,6 +123,7 @@ class TonnelAdapter(MarketAdapter):
             raise SchemaError(self.name, f"filterStats: неожиданный ответ ({message or 'нет data'})")
         floors: dict[Key, _Floor] = {}
         collections: dict[str, str] = {}
+        models: dict[Key, tuple[str, str]] = {}
         bad = 0
         for raw_key, value in data["data"].items():
             collection, sep, model = str(raw_key).partition("_")
@@ -128,6 +131,8 @@ class TonnelAdapter(MarketAdapter):
                 bad += 1
                 continue
             collections[normalize(collection)] = collection
+            key = (normalize(collection), normalize(model))
+            models[key] = (collection, model)
             if value.get("floorPrice") is None:
                 continue  # нет лотов этой модели
             try:
@@ -135,12 +140,12 @@ class TonnelAdapter(MarketAdapter):
             except SchemaError:
                 bad += 1
                 continue
-            key = (normalize(collection), normalize(model))
             floors[key] = _Floor(collection, model, price, as_int_or_none(value.get("howMany")))
         if data["data"] and (not floors or bad * 2 > len(data["data"])):
             raise SchemaError(self.name, f"filterStats: не разобрано {bad} из {len(data['data'])} записей")
         self._floors = floors
         self._collections = collections
+        self._models = models
         log.info("Tonnel: загружено флоров моделей: %d", len(floors))
 
     async def model_floor(self, key: Key) -> ModelFloor | None:
@@ -150,12 +155,12 @@ class TonnelAdapter(MarketAdapter):
     async def cheapest(self, key: Key, limit: int) -> list[Listing] | None:
         if key[0] not in self._collections:
             return None
-        floor = self._floors.get(key)
-        if floor is None:
-            return []  # этой модели сейчас нет в продаже
+        names = self._models.get(key)
+        if names is None:
+            return None  # модели не было при последнем обновлении кэша — запросить нечем
+        # Запрашиваем вживую, даже если по кэшу лотов нет: кэш обновляется раз в FLOORS_REFRESH_SEC
         flt = self._base_filter()
-        flt["gift_name"] = floor.collection
-        flt["model"] = floor.model
+        flt["gift_name"], flt["model"] = names
         items = await self._page(flt, SORT_PRICE_ASC, limit, "дешёвые лоты модели")
         return only_key(self.name, items, key)
 
@@ -212,7 +217,7 @@ class TonnelAdapter(MarketAdapter):
         # Цена — как в ленте, без комиссии: Tonnel сам добавит её при списании
         await self._trade(f"buyGift/{listing.listing_id}", {"asset": "TON", "price": float(listing.price)})
 
-    async def owned(self) -> list[OwnedGift]:
+    async def owned(self) -> Inventory:
         user_id = tonnel_user_id(self.name, self.auth)
         queries = [
             # выставленные на продажу
@@ -225,13 +230,17 @@ class TonnelAdapter(MarketAdapter):
             ),
         ]
         gifts: list[OwnedGift] = []
+        complete = True
         for flt, sort, listed in queries:
             for page in range(1, OWNED_MAX_PAGES + 1):
                 data = await self._raw_page(flt, sort, MAX_LIMIT, page)
                 gifts += parse_items(self.name, data, lambda i: self._parse_owned(i, listed), "ваши подарки")
                 if not isinstance(data, list) or len(data) < MAX_LIMIT:
                     break
-        return gifts
+            else:
+                complete = False
+                log.warning("Tonnel: в инвентаре больше %d подарков, прочитаны не все", MAX_LIMIT * OWNED_MAX_PAGES)
+        return Inventory(gifts, complete)
 
     async def list_for_sale(self, gift: OwnedGift, price: float) -> None:
         await self._trade("listForSale", {"gift_id": int(gift.owned_id), "price": round(price, 2), "asset": "TON"})

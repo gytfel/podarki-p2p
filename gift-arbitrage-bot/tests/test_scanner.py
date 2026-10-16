@@ -69,6 +69,27 @@ def test_cross_market_deal_skipped_when_listing_already_sold(world):
     assert world.bot.sent == []
 
 
+def test_cross_deal_for_model_that_had_no_listings_at_cache_refresh(store):
+    from conftest import FakeHttp
+    from giftbot.markets.tonnel import TonnelAdapter
+
+    stats = {"status": "success", "data": {"Toy Bear_Wizard (1.5%)": {"floorPrice": None, "howMany": 0},
+                                           "Toy Bear_Pilot (2%)": {"floorPrice": 5, "howMany": 9}}}
+    gift = {"gift_id": 101, "gift_num": 555, "name": "Toy Bear", "model": "Wizard (1.5%)", "price": 10.0,
+            "asset": "TON"}
+    tonnel = TonnelAdapter(FakeHttp([("POST", "filterStats", stats), ("POST", "pageGifts", [gift])]))
+    run(tonnel.refresh())
+    world = World(store)
+    world.scanner.adapters["tonnel"] = tonnel
+    world.portals.floors[KEY] = ModelFloor(16.0)
+    world.portals_book(16.0, 16.5, 17.0, 18.0)
+
+    run(world.scanner.poll_once("tonnel"))
+
+    [message] = world.bot.sent  # лот проверен вживую и всё ещё в продаже
+    assert "Tonnel → Portals" in message
+
+
 def test_same_market_snipe(world):
     world.portals.feed = [lot("portals", "a", 8.0)]
     world.portals.floors[KEY] = ModelFloor(12.0)
@@ -80,6 +101,27 @@ def test_same_market_snipe(world):
     assert "внутри Portals" in message
     assert "Перенос" not in message
     assert "самый дешёвый сейчас 12.00, лотов: 3" in message
+
+
+def test_same_market_snipe_when_cached_floor_is_the_listing_itself(world):
+    world.portals.feed = [lot("portals", "a", 8.0)]
+    world.portals.floors[KEY] = ModelFloor(8.0)  # кэш загрузили уже после появления лота
+    world.portals_book(8.0, 12.0, 12.5, 13.0, ids=["a", "b", "c", "d"])
+
+    run(world.scanner.poll_once("portals"))
+
+    [message] = world.bot.sent
+    assert "внутри Portals" in message
+    assert "самый дешёвый сейчас 12.00, лотов: 3" in message
+
+
+def test_own_floor_with_too_few_listings_is_not_checked_live(world):
+    world.tonnel.feed = [lot("tonnel", "101", 8.0)]
+    world.tonnel.floors[KEY] = ModelFloor(8.0, count=3)  # сам лот + 2 конкурента — меньше MIN_REF_LISTINGS
+
+    run(world.scanner.poll_once("tonnel"))
+    assert "cheapest" not in world.tonnel.calls
+    assert world.bot.sent == []
 
 
 def test_too_few_competitors_is_not_a_deal(world):

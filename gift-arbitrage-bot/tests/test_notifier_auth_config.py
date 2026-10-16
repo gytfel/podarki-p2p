@@ -157,3 +157,11 @@ def test_autobuy_config(env):
     monkeypatch.setenv("AUTOBUY_MAX_PRICE_TON", "40")
     with pytest.raises(ConfigError, match="AUTOBUY_MAX_PRICE_TON"):
         load_config(path)
+
+
+def test_scanner_on_tonnel_only_starts_with_autobuy_off(env):
+    monkeypatch, path = env
+    monkeypatch.setenv("MARKETS", "tonnel")  # AUTOBUY_MARKETS по умолчанию portals
+    cfg = load_config(path)
+    assert cfg.markets == ("tonnel",)
+    assert cfg.autobuy.markets == ()

@@ -294,7 +294,7 @@ class MarketAdapter(ABC):
 
     @abstractmethod
     async def cheapest(self, key: Key, limit: int) -> list[Listing] | None:
-        """Самые дешёвые лоты модели прямо сейчас. None — коллекция площадке неизвестна."""
+        """Самые дешёвые лоты модели прямо сейчас (запрос вживую). None — коллекция или модель площадке неизвестна."""
 
     # --- торговля (для автопокупки) ---
 
@@ -310,7 +310,7 @@ class MarketAdapter(ABC):
         raise NotImplementedError(f"{self.title}: торговля не поддерживается")
 
     async def owned(self) -> list[OwnedGift]:
-        """Все ваши подарки на площадке: выставленные и нет."""
+        """Все ваши подарки на площадке: выставленные и нет (models.Inventory, если выдача могла обрезаться)."""
         raise NotImplementedError(f"{self.title}: торговля не поддерживается")
 
     async def list_for_sale(self, gift: OwnedGift, price: float) -> None:

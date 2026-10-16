@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -86,3 +87,12 @@ class OwnedGift:
         if owned_id and self.owned_id == owned_id:
             return True
         return number is not None and self.number == number and normalize(self.collection) == normalize(collection)
+
+
+class Inventory(list):
+    """Ваши подарки на площадке. complete=False — выдача обрезана лимитом страниц:
+    если подарка в ней нет, это ещё не значит, что он продан."""
+
+    def __init__(self, gifts: Iterable[OwnedGift] = (), complete: bool = True):
+        super().__init__(gifts)
+        self.complete = complete

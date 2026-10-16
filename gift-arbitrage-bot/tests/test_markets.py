@@ -86,7 +86,23 @@ def test_portals_floors_and_cheapest():
     assert params["sort_by"] == "price asc"
 
     assert run(adapter.cheapest(("unknown", "x"), 6)) is None
-    assert run(adapter.cheapest(("toy bear", "nonexistent"), 6)) == []
+    assert run(adapter.cheapest(("toy bear", "nonexistent"), 6)) is None
+
+
+def test_portals_model_without_listings_is_still_checked_live():
+    filters = {"floor_prices": {"toybear": {"models": {"Wizard": "12.5", "Ghost": "0"}}}}
+    adapter, http = portals(
+        [
+            ("GET", "collections/filters", filters),
+            ("GET", "collections?", COLLECTIONS),
+            ("GET", "nfts/search", {"results": [portals_nft("n9", 30, model="Ghost")]}),
+        ]
+    )
+    run(adapter.refresh())
+    assert run(adapter.model_floor(("toy bear", "ghost"))) is None  # по кэшу лотов нет…
+    [item] = run(adapter.cheapest(("toy bear", "ghost"), 6))  # …но площадку спрашиваем вживую
+    assert item.listing_id == "n9"
+    assert query(http.calls[-1][1])["filter_by_models"] == "Ghost"
 
 
 def test_portals_broken_model_filter_is_detected():
@@ -165,23 +181,25 @@ def test_tonnel_latest_skips_bundles_and_other_assets():
 
 
 def test_tonnel_floors_and_cheapest():
-    adapter, http = tonnel(
-        [
-            ("POST", "filterStats", STATS),
-            ("POST", "pageGifts", [tonnel_gift(103, 12), tonnel_gift(101, 11)]),
-        ]
-    )
+    def page(url, body):
+        if json.loads(body["filter"])["model"] == "Pilot (2%)":
+            return [tonnel_gift(201, 9, model="Pilot (2%)")]  # выставили после обновления кэша
+        return [tonnel_gift(103, 12), tonnel_gift(101, 11)]
+
+    adapter, http = tonnel([("POST", "filterStats", STATS), ("POST", "pageGifts", page)])
     run(adapter.refresh())
     floor = run(adapter.model_floor(KEY))
     assert (floor.price, floor.count) == (11, 7)
-    assert run(adapter.model_floor(("toy bear", "pilot"))) is None  # лотов нет
+    assert run(adapter.model_floor(("toy bear", "pilot"))) is None  # по кэшу лотов нет
 
     items = run(adapter.cheapest(KEY, 6))
     assert [i.listing_id for i in items] == ["101", "103"]
     flt = json.loads(http.calls[-1][2]["filter"])
     assert flt["gift_name"] == "Toy Bear" and flt["model"] == "Wizard (1.5%)"
     assert run(adapter.cheapest(("unknown", "x"), 6)) is None
-    assert run(adapter.cheapest(("toy bear", "pilot"), 6)) == []
+    assert run(adapter.cheapest(("toy bear", "no such model"), 6)) is None
+    # кэш говорит «лотов нет», но cheapest всё равно спрашивает площадку
+    assert [i.listing_id for i in run(adapter.cheapest(("toy bear", "pilot"), 6))] == ["201"]
 
 
 def test_tonnel_stats_error_is_schema_error():
@@ -225,12 +243,20 @@ def test_portals_balance_owned_and_listing():
     assert run(adapter.balance()).available == 20.0
     gifts = run(adapter.owned())
     assert [(g.owned_id, g.listed_price, g.number) for g in gifts] == [("n1", 15.0, 7), ("n2", None, 7)]
+    assert gifts.complete
     run(adapter.list_for_sale(gifts[1], 13.25))
     assert http.calls[-1][2] == {"nft_prices": [{"nft_id": "n2", "price": "13.25"}]}
 
     adapter, _ = portals([("POST", "bulk-list", {"successful_nfts": [], "failed_nfts": [{"id": "n2"}]})])
     with pytest.raises(BuyRejected):
         run(adapter.list_for_sale(gifts[1], 13.25))
+
+
+def test_portals_owned_marks_truncated_inventory():
+    full_page = {"nfts": [portals_nft(f"n{i}", 15, number=i) for i in range(50)]}
+    adapter, _ = portals([("GET", "status=listed", full_page), ("GET", "status=unlisted", {})])
+    gifts = run(adapter.owned())
+    assert len(gifts) == 250 and not gifts.complete  # упёрлись в лимит страниц
 
 
 def tonnel_trader(routes):

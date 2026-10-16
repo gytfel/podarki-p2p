@@ -346,6 +346,13 @@ class Trader:
                 gifts = await self.scanner.call(market, self._adapter(market).owned)
             except MarketError:
                 continue
+            if not getattr(gifts, "complete", True):
+                await self.notify_once(
+                    f"inventory:{market}",
+                    f"⚠️ На {self._title(market)} в инвентаре слишком много подарков, бот читает не все. "
+                    "Продажи могут не определяться: проверяйте /positions и закрывайте вручную через /forget номер.",
+                    every=DAY,
+                )
             for position in positions:
                 await self._check_position(position, gifts)
 
@@ -363,6 +370,8 @@ class Trader:
             if position.misses:
                 self.store.update_position(position.id, misses=0)
             return
+        if not getattr(gifts, "complete", True):
+            return  # инвентарь прочитан не целиком: отсутствие подарка не значит, что он продан
         if position.misses < 1:  # ждём второй проверки, чтобы не ошибиться из-за сбоя выдачи
             self.store.update_position(position.id, misses=position.misses + 1)
             return
@@ -424,7 +433,7 @@ class Trader:
             [
                 f"🤖 <b>Автопокупка</b>: {state}",
                 f"Режим: {self.ab.mode} ({mode})",
-                f"Площадки: {', '.join(self._title(m) for m in self.ab.markets)}; "
+                f"Площадки: {', '.join(self._title(m) for m in self.ab.markets) or '—'}; "
                 f"между площадками: {'да' if self.ab.cross else 'нет'}",
                 f"За 24 ч: потрачено {ton(spent)} из {ton(self.ab.daily_limit)} TON, "
                 f"покупок {count} из {self.ab.max_per_day}",
