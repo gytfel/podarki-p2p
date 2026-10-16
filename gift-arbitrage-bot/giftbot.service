@@ -1,0 +1,17 @@
+# Автозапуск на Linux-сервере (systemd). Замените /opt/gift-arbitrage-bot на свою папку.
+#   sudo cp giftbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now giftbot
+#   journalctl -u giftbot -f      # смотреть лог
+[Unit]
+Description=Telegram gifts arbitrage scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/gift-arbitrage-bot
+ExecStart=/opt/gift-arbitrage-bot/.venv/bin/python -m giftbot run
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
