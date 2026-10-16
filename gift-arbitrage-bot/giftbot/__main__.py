@@ -16,7 +16,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from .auth import AuthProvider, AuthSetupError
+from .auth import AuthProvider, AuthSetupError, connect
 from .config import Config, ConfigError, load_config
 from .markets import HttpClient, MarketAdapter, MarketError, PortalsAdapter, RateLimiter, TonnelAdapter
 from .notifier import TelegramBot
@@ -64,11 +64,19 @@ async def cmd_login(cfg: Config) -> int:
     from telethon import TelegramClient
 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    print("Введите номер телефона в международном формате (+7…), затем код из Telegram.")
     client = TelegramClient(str(cfg.session_path), cfg.api_id, cfg.api_hash)
-    await client.start()
+    try:
+        await connect(client)
+        if not await client.is_user_authorized():
+            print("Введите номер телефона в международном формате (+7…), затем код из Telegram")
+            print("и пароль, если включена двухэтапная проверка.")
+            await client.start()
+    except Exception as exc:  # неверный номер, нет связи с Telegram, неверные API_ID/API_HASH
+        print(f"\n❌ Вход не выполнен: {type(exc).__name__}: {exc}")
+        await client.disconnect()
+        return 1
     me = await client.get_me()
-    print(f"\n✅ Вход выполнен: {me.first_name} (@{me.username}).")
+    print(f"\n✅ Вход выполнен: {me.first_name}" + (f" (@{me.username})." if me.username else "."))
     print(f"Сессия сохранена в {cfg.session_path}.session — никому её не передавайте.")
     await client.disconnect()
     return 0
@@ -81,7 +89,12 @@ async def cmd_chatid(cfg: Config) -> int:
     deadline = time.monotonic() + 120
     try:
         while time.monotonic() < deadline:
-            for update in await bot.fetch_updates(timeout=20):
+            try:
+                updates = await bot.fetch_updates(timeout=20)
+            except Exception as exc:
+                print(f"❌ Telegram: {exc}. Проверьте BOT_TOKEN и что сервер видит api.telegram.org")
+                return 1
+            for update in updates:
                 chat = (update.get("message") or {}).get("chat") or {}
                 if chat.get("id") is not None:
                     print(f"\nВаш chat_id: {chat['id']}")

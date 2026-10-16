@@ -1,4 +1,5 @@
-# Автозапуск на Linux-сервере (systemd). Замените /opt/gift-arbitrage-bot на свою папку.
+# Автозапуск на Linux-сервере (systemd). install.sh ставит этот файл сам, подставив свою папку.
+# Вручную: замените /opt/gift-arbitrage-bot на свою папку и giftbot на своего пользователя, затем
 #   sudo cp giftbot.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now giftbot
 #   journalctl -u giftbot -f      # смотреть лог
@@ -8,10 +9,18 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+User=giftbot
+Group=giftbot
 WorkingDirectory=/opt/gift-arbitrage-bot
 ExecStart=/opt/gift-arbitrage-bot/.venv/bin/python -m giftbot run
+Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=30
+# Защита: бот пишет только в свою папку data/
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target

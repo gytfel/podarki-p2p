@@ -80,6 +80,26 @@ def test_extract_init_data_from_webapp_url():
         extract_init_data("https://example.com/#nothing=1")
 
 
+def test_connect_gives_up_when_telegram_does_not_answer(monkeypatch):
+    import giftbot.auth as auth
+
+    monkeypatch.setattr(auth, "CONNECT_TIMEOUT", 0.05)
+
+    class Hanging:  # соединение есть, ответа нет — так выглядит заглушённый Telegram
+        disconnected = False
+
+        async def connect(self):
+            await asyncio.sleep(3600)
+
+        async def disconnect(self):
+            self.disconnected = True
+
+    client = Hanging()
+    with pytest.raises(auth.AuthSetupError, match="Нет связи с Telegram"):
+        run(auth.connect(client))
+    assert client.disconnected
+
+
 def test_manual_auth_gets_portals_prefix():
     assert normalize_override("portals", "query_id=1") == "tma query_id=1"
     assert normalize_override("portals", "tma query_id=1") == "tma query_id=1"

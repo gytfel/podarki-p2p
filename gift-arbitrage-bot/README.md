@@ -17,7 +17,71 @@
   на котором лежат TON на площадках.
 - 10–15 минут на настройку.
 
-## Установка
+## Установка на VPS через терминал
+
+Подойдёт VPS с **Ubuntu 22.04 / 24.04** или **Debian 12**: хватит 1 ядра и 1 ГБ памяти.
+Бот сам отправляет запросы и ничего не принимает, поэтому открывать порты не нужно.
+
+**Заранее подготовьте** (в Telegram и браузере, не на сервере):
+
+1. Токен бота: @BotFather → `/newbot` → скопируйте токен.
+2. `API_ID` и `API_HASH`: my.telegram.org → *API development tools* → создайте приложение.
+
+**1. Подключитесь к серверу.** IP и пароль root присылает хостинг. На Windows 10/11 откройте
+PowerShell, на macOS и Linux — Терминал:
+
+```bash
+ssh root@IP_ВАШЕГО_СЕРВЕРА
+```
+
+При первом подключении ответьте `yes`, затем введите пароль (символы при вводе не видны).
+
+**2. Скачайте бота и запустите установку:**
+
+```bash
+apt-get update && apt-get install -y git
+git clone -b fix/scanner-bot-review https://github.com/gytfel/podarki-p2p.git ~/podarki-p2p
+bash ~/podarki-p2p/gift-arbitrage-bot/install.sh
+```
+
+Если вы вошли не как root (например, `ubuntu`), добавляйте `sudo` перед `apt-get` и `bash`.
+Когда исправления окажутся в ветке `main`, `-b fix/scanner-bot-review` можно не писать.
+
+**3. Ответьте на вопросы скрипта.** Он попросит по очереди:
+
+- токен бота, `API_ID` и `API_HASH`;
+- отправить своему боту `/start` — так скрипт узнает ваш chat_id;
+- номер телефона и код из Telegram — вход делается один раз, сессия хранится на сервере;
+- открыть @portals и @Tonnel_Network_bot с этого аккаунта.
+
+Потом скрипт проверит связь с ботом и площадками (бот пришлёт тестовое сообщение) и запустит
+сканер. Он работает круглосуточно и сам поднимается после перезагрузки сервера — окно SSH
+можно закрывать.
+
+Пороги прибыли, комиссии и автопокупка настраиваются в `/opt/gift-arbitrage-bot/.env`:
+
+```bash
+nano /opt/gift-arbitrage-bot/.env      # сохранить: Ctrl+O и Enter, выйти: Ctrl+X
+systemctl restart giftbot              # применить изменения
+```
+
+| Команда на сервере | Что делает |
+|---|---|
+| `systemctl status giftbot` | работает ли бот |
+| `journalctl -u giftbot -f` | лог в реальном времени (выход: Ctrl+C) |
+| `systemctl restart giftbot` | перезапуск |
+| `systemctl stop giftbot` | остановка |
+
+**Обновление** (настройки и вход сохраняются):
+
+```bash
+cd ~/podarki-p2p && git pull && bash gift-arbitrage-bot/install.sh
+```
+
+**Войти заново или в другой аккаунт:** `systemctl stop giftbot`, удалите
+`/opt/gift-arbitrage-bot/data/telegram.session` и снова запустите `install.sh`.
+
+## Установка на своём компьютере
 
 ```bash
 cd gift-arbitrage-bot
@@ -41,7 +105,8 @@ cp .env.example .env               # Windows: copy .env.example .env
    получилось ли загрузить данные с каждой площадки.
 7. **Запуск.** `python -m giftbot run`
 
-Чтобы бот работал постоянно на сервере, используйте `giftbot.service` (инструкция внутри файла).
+На сервере всё это делает `install.sh` (раздел «Установка на VPS» выше). Ручная настройка
+автозапуска — в файле `giftbot.service`.
 
 ## Команды в Telegram
 
