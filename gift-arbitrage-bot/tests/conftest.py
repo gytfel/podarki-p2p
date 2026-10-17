@@ -191,9 +191,13 @@ class FakeAdapter(MarketAdapter):
 class FakeBot:
     def __init__(self):
         self.sent: list[str] = []
+        self.buttons: list[tuple] = []  # кнопки под каждым отправленным сообщением
+        self.menus: list[bool] = []
 
-    async def send(self, text: str, chat_id: int | None = None) -> bool:
+    async def send(self, text: str, chat_id: int | None = None, *, buttons=(), menu: bool = False) -> bool:
         self.sent.append(text)
+        self.buttons.append(tuple(buttons))
+        self.menus.append(menu)
         return True
 
     async def poll_commands(self, handler) -> None:  # pragma: no cover

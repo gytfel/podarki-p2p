@@ -7,6 +7,7 @@ from conftest import FakeAdapter, FakeAuth, FakeBot, lot, make_autobuy, make_con
 from giftbot.markets.base import BuyRejected, SchemaError, TransportError
 from giftbot.models import ModelFloor, OwnedGift
 from giftbot.scanner import Scanner
+from giftbot.ui import reply_text
 from giftbot.store import Store
 from giftbot.trader import Trader
 
@@ -15,6 +16,11 @@ KEY = ("toy bear", "wizard")
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def cmd(world, command, args=()):
+    """Текст ответа на команду (кнопки проверяются отдельно)."""
+    return reply_text(run(world.scanner.on_command(command, list(args))))
 
 
 class World:
@@ -37,7 +43,7 @@ class World:
         self.scanner.trader = self.trader
 
     def arm(self) -> str:
-        return run(self.scanner.on_command("/autobuy", ["on"]))
+        return cmd(self, "/autobuy", ["on"])
 
     def portals_snipe(self, lid="a", price=8.0, number=101):
         """Лот на Portals заметно дешевле трёх конкурентов той же модели."""
@@ -315,10 +321,10 @@ def test_positions_and_forget_commands(world):
     world.arm()
     world.portals_snipe()
     world.poll()
-    text = run(world.scanner.on_command("/positions", []))
+    text = cmd(world, "/positions")
     assert "#1 Toy Bear — Wizard #101" in text and "выставлено за 11.88" in text
-    assert "Позиция #1 закрыта" in run(world.scanner.on_command("/forget", ["#1"]))
-    assert "уже закрыта" in run(world.scanner.on_command("/forget", ["1"]))
-    assert "Открытых позиций нет" in run(world.scanner.on_command("/positions", []))
-    assert "Автопокупка выключена" in run(world.scanner.on_command("/autobuy", ["off"]))
-    assert "выключена командой" in run(world.scanner.on_command("/autobuy", []))
+    assert "Позиция #1 закрыта" in cmd(world, "/forget", ["#1"])
+    assert "уже закрыта" in cmd(world, "/forget", ["1"])
+    assert "Открытых позиций нет" in cmd(world, "/positions")
+    assert "Автопокупка выключена" in cmd(world, "/autobuy", ["off"])
+    assert "выключена командой" in cmd(world, "/autobuy")

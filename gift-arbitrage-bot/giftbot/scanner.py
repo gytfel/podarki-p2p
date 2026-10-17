@@ -14,7 +14,7 @@ import html
 import logging
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
 
 from .config import Config
@@ -23,27 +23,30 @@ from .guard import MarketHealth, hint_for
 from .markets.base import AuthError, MarketAdapter, MarketError
 from .models import Listing, ModelFloor
 from .store import Store
+from .ui import Button, Reply
 
 log = logging.getLogger(__name__)
 
 HELP = (
-    "<b>Команды</b>\n"
-    "/status — состояние площадок и число найденных сделок\n"
-    "/pause — поставить сканирование на паузу\n"
-    "/resume — продолжить и снова включить остановленные площадки\n"
-    "/settings — текущие пороги и комиссии\n\n"
+    "<b>Команды</b> — кнопками в меню под полем ввода или текстом:\n"
+    "📊 /status — состояние площадок и число найденных сделок\n"
+    "⏸ /pause — поставить сканирование на паузу\n"
+    "▶️ /resume — продолжить и снова включить остановленные площадки\n"
+    "⚙️ /settings — текущие пороги и комиссии\n\n"
     "<b>Автопокупка</b>\n"
-    "/autobuy — состояние и лимиты\n"
+    "🤖 /autobuy — состояние, лимиты, кнопки «Включить» и «Выключить»\n"
     "/autobuy on — включить, /autobuy off — выключить\n"
-    "/positions — купленные и ещё не проданные подарки\n"
+    "📦 /positions — купленные и ещё не проданные подарки, кнопка «Закрыть» у каждого\n"
     "/forget номер — закрыть позицию, если разобрались вручную"
 )
 
 
 class Notifier(Protocol):
-    async def send(self, text: str) -> bool: ...
+    async def send(
+        self, text: str, chat_id: int | None = None, *, buttons: Sequence[Sequence[Button]] = (), menu: bool = False
+    ) -> bool: ...
 
-    async def poll_commands(self, handler: Callable[[str, list[str]], Awaitable[str | None]]) -> None: ...
+    async def poll_commands(self, handler: Callable[[str, list[str]], Awaitable[str | Reply | None]]) -> None: ...
 
 
 class AuthSource(Protocol):
@@ -179,7 +182,10 @@ class Scanner:
             await self.bot.send(f"✅ <b>{adapter.title}</b> снова отвечает, сканирование возобновлено.")
         else:
             health.waiting_resume = True
-            await self.bot.send(f"✅ <b>{adapter.title}</b> снова отвечает. Отправьте /resume, чтобы продолжить.")
+            await self.bot.send(
+                f"✅ <b>{adapter.title}</b> снова отвечает. Отправьте /resume, чтобы продолжить.",
+                buttons=((("▶️ Продолжить", "+/resume"),),),
+            )
 
     # ------------------------------------------------------------ оценка лота
 
@@ -337,26 +343,29 @@ class Scanner:
             else "Когда площадка снова ответит, бот напишет — продолжить можно командой /resume."
         )
         autobuy = ""
+        buttons: list[tuple[Button, ...]] = [(("▶️ Включить сейчас", "+/resume"), ("📊 Статус", "+/status"))]
         if self.trader is not None and self.trader.disarm(f"{title}: сканирование остановлено"):
             autobuy = "\n\n🛑 Автопокупка выключена. Включить снова: /autobuy on"
+            buttons.append((("🤖 Автопокупка", "+/autobuy"),))
         await self.bot.send(
             f"⛔ <b>{title}: сканирование остановлено</b>\n"
             f"Причина: {esc(error.kind)} — {esc(error)}\n"
             f"Ошибок подряд: {self.health[market].consecutive}\n\n"
             f"{esc(hint_for(error))}\n"
-            f"Бот проверяет площадку раз в {ago(self.cfg.probe_interval)}. {resume}{autobuy}"
+            f"Бот проверяет площадку раз в {ago(self.cfg.probe_interval)}. {resume}{autobuy}",
+            buttons=tuple(buttons),
         )
 
     # ------------------------------------------------------------ команды
 
-    async def on_command(self, command: str, args: list[str]) -> str | None:
+    async def on_command(self, command: str, args: list[str]) -> str | Reply | None:
         if command in ("/start", "/help"):
             return HELP
         if command == "/status":
-            return self.status_text()
+            return self.status_panel()
         if command == "/pause":
             self.paused = True
-            return "⏸ Сканирование на паузе. /resume — продолжить."
+            return self.status_panel("⏸ Сканирование на паузе.")
         if command == "/resume":
             self.paused = False
             revived = [self.adapters[m].title for m, h in self.health.items() if h.tripped]
@@ -365,7 +374,7 @@ class Scanner:
             text = "▶️ Сканирование продолжено."
             if revived:
                 text += " Снова включены: " + ", ".join(revived) + "."
-            return text
+            return self.status_panel(text)
         if command == "/settings":
             return self.settings_text()
         if self.trader is not None:
@@ -373,6 +382,16 @@ class Scanner:
             if reply is not None:
                 return reply
         return "Неизвестная команда. Список команд: /help"
+
+    def status_panel(self, note: str = "") -> Reply:
+        """Статус с кнопками «Обновить» и «Пауза»/«Продолжить». note — строка о только что сделанном."""
+        stopped = self.paused or any(h.tripped for h in self.health.values())
+        toggle = ("▶️ Продолжить", "/resume") if stopped else ("⏸ Пауза", "/pause")
+        rows: list[tuple[Button, ...]] = [(("🔄 Обновить", "/status"), toggle)]
+        if self.trader is not None and self.cfg.autobuy.enabled:
+            rows.append((("🤖 Автопокупка", "+/autobuy"), ("📦 Позиции", "+/positions")))
+        text = self.status_text()
+        return Reply(f"{note}\n\n{text}" if note else text, tuple(rows))
 
     def status_text(self) -> str:
         now = self.clock()
@@ -442,14 +461,14 @@ class Scanner:
             f"Площадки: {', '.join(a.title for a in self.adapters.values())}\n"
             f"Ищу прибыль от {ton(th.min_profit_ton)} TON и {th.min_profit_pct * 100:.0f}%, "
             f"цена лота {ton(self.cfg.min_buy_price)}–{ton(self.cfg.max_buy_price)} TON.\n"
-            "/help — команды"
+            "Команды — кнопками в меню под полем ввода, /help — список"
         )
         if self.trader is not None and self.cfg.autobuy.enabled:
             mode = "ТЕСТОВЫЙ режим (dry)" if self.cfg.autobuy.mode == "dry" else "режим live — РЕАЛЬНЫЕ покупки"
             text += f"\n\n🤖 Автопокупка: {mode}. Сейчас выключена, включить: /autobuy on"
         if problems:
             text += "\n\n⚠️ " + "\n⚠️ ".join(problems)
-        await self.bot.send(text)
+        await self.bot.send(text, menu=True)
         if self.trader is not None:
             await self.trader.recover()
 

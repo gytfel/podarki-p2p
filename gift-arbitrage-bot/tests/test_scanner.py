@@ -6,12 +6,18 @@ from conftest import FakeAdapter, FakeAuth, FakeBot, lot, make_config
 from giftbot.markets.base import AuthError, SchemaError, TransportError
 from giftbot.models import ModelFloor
 from giftbot.scanner import Scanner, listing_gone
+from giftbot.ui import reply_text
 
 KEY = ("toy bear", "wizard")
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def cmd(world, command, args=()):
+    """Текст ответа на команду (кнопки проверяются отдельно)."""
+    return reply_text(run(world.scanner.on_command(command, list(args))))
 
 
 class World:
@@ -210,21 +216,21 @@ def test_probe_waits_for_resume_when_auto_resume_off(store):
     run(world.scanner.poll_once("portals"))
     assert world.scanner.health["portals"].tripped
     assert "/resume" in world.bot.sent[-1]
-    reply = run(world.scanner.on_command("/resume", []))
+    reply = cmd(world, "/resume")
     assert "Снова включены: Portals" in reply
     assert not world.scanner.health["portals"].tripped
 
 
 def test_pause_and_status_commands(world):
-    assert "паузе" in run(world.scanner.on_command("/pause", []))
+    assert "паузе" in cmd(world, "/pause")
     run(world.scanner.poll_once("portals"))
     assert world.portals.calls == []
     assert "На паузе" in world.scanner.status_text()
-    run(world.scanner.on_command("/resume", []))
+    cmd(world, "/resume")
     run(world.scanner.poll_once("portals"))
     assert world.portals.calls == ["latest"]
-    assert "Неизвестная команда" in run(world.scanner.on_command("/buy", []))
-    assert "Tonnel: покупка +10.0%" in run(world.scanner.on_command("/settings", []))
+    assert "Неизвестная команда" in cmd(world, "/buy")
+    assert "Tonnel: покупка +10.0%" in cmd(world, "/settings")
 
 
 def test_names_are_escaped_in_messages(world):
