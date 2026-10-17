@@ -386,8 +386,10 @@ class Scanner:
     def status_panel(self, note: str = "") -> Reply:
         """Статус с кнопками «Обновить» и «Пауза»/«Продолжить». note — строка о только что сделанном."""
         stopped = self.paused or any(h.tripped for h in self.health.values())
-        toggle = ("▶️ Продолжить", "/resume") if stopped else ("⏸ Пауза", "/pause")
-        rows: list[tuple[Button, ...]] = [(("🔄 Обновить", "/status"), toggle)]
+        refresh: Button = ("🔄 Обновить", "/status")
+        # «Пауза» и «Продолжить» на разных местах: повторное нажатие попадёт в «Обновить», а не отменит действие
+        first_row = (("▶️ Продолжить", "/resume"), refresh) if stopped else (refresh, ("⏸ Пауза", "/pause"))
+        rows: list[tuple[Button, ...]] = [first_row]
         if self.trader is not None and self.cfg.autobuy.enabled:
             rows.append((("🤖 Автопокупка", "+/autobuy"), ("📦 Позиции", "+/positions")))
         text = self.status_text()

@@ -16,6 +16,12 @@ log = logging.getLogger(__name__)
 
 CommandHandler = Callable[[str, list[str]], Awaitable["str | Reply | None"]]
 
+STALE_QUERY_ERRORS = ("query is too old", "query ID is invalid")
+STALE_PRESS_TEXT = (
+    "⌛ Кнопку нажали, пока бот был недоступен, — это нажатие не выполнено. "
+    "Откройте нужное меню заново и нажмите ещё раз."
+)
+
 
 def parse_command(text: str) -> tuple[str, list[str]]:
     parts = text.split()
@@ -131,10 +137,13 @@ class TelegramBot:
             await asyncio.sleep(self._send_interval)
             return True
 
-    async def answer_callback(self, callback_id: str | None, text: str | None = None) -> None:
-        """Подтверждает нажатие кнопки: иначе в Telegram на ней долго крутятся «часики»."""
+    async def answer_callback(self, callback_id: str | None, text: str | None = None) -> bool:
+        """Подтверждает нажатие кнопки: иначе в Telegram на ней долго крутятся «часики».
+
+        False — Telegram считает нажатие устаревшим (его сделали давно, например пока бот был выключен).
+        """
         if not callback_id:
-            return
+            return True
         params = {"callback_query_id": callback_id}
         if text:
             params["text"] = text
@@ -142,6 +151,8 @@ class TelegramBot:
             await self._call("answerCallbackQuery", **params)
         except Exception as exc:
             log.debug("Не удалось ответить на нажатие кнопки: %s", exc)
+            return not any(sign in str(exc) for sign in STALE_QUERY_ERRORS)
+        return True
 
     async def setup_commands(self) -> None:
         """Меню «/» в Telegram со списком команд."""
@@ -197,7 +208,11 @@ class TelegramBot:
         if not line.startswith("/"):
             await self.answer_callback(query.get("id"), "Кнопка устарела")
             return
-        await self.answer_callback(query.get("id"))
+        if not await self.answer_callback(query.get("id")):
+            # старое нажатие не выполняем: со временем обстановка могла измениться (это может быть «Да, включить»)
+            log.warning("Устаревшее нажатие кнопки %r пропущено", data)
+            await self.send(STALE_PRESS_TEXT, chat_id)
+            return
         command, args = parse_command(line)
         reply = await handler(command, args)
         if not reply:
@@ -206,12 +221,45 @@ class TelegramBot:
         if as_new or message_id is None or not await self.edit(chat_id, message_id, reply):
             await self.send_reply(reply, chat_id)
 
+    async def _handle_safely(self, update: dict, handler: CommandHandler) -> None:
+        """Сбой одной команды не должен терять остальные из той же пачки."""
+        try:
+            await self.handle_update(update, handler)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Сбой при обработке команды из Telegram")
+
+    async def skip_stale_presses(self, handler: CommandHandler) -> None:
+        """При запуске: нажатия кнопок, накопившиеся, пока бот был выключен, не выполняем.
+        Напечатанные команды выполняем как обычно."""
+        stale = 0
+        try:
+            while updates := await self.fetch_updates(timeout=0):
+                for update in updates:
+                    query = update.get("callback_query")
+                    if query is None:
+                        await self._handle_safely(update, handler)
+                        continue
+                    chat_id = ((query.get("message") or {}).get("chat") or {}).get("id")
+                    await self.answer_callback(query.get("id"))
+                    if chat_id == self.admin_chat_id:
+                        stale += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Не удалось разобрать накопившиеся команды Telegram: %s", exc)
+        if stale:
+            log.warning("Пропущено нажатий кнопок, сделанных до запуска: %d", stale)
+            await self.send(STALE_PRESS_TEXT)
+
     async def poll_commands(self, handler: CommandHandler) -> None:
         await self.setup_commands()
+        await self.skip_stale_presses(handler)
         while True:
             try:
                 for update in await self.fetch_updates():
-                    await self.handle_update(update, handler)
+                    await self._handle_safely(update, handler)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

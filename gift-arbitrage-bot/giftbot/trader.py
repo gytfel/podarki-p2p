@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DAY = 86400.0
+MAX_POSITION_BUTTONS = 20  # столько позиций показываем с кнопкой «Закрыть», остальные — командой /forget
 
 
 def esc(value: object) -> str:
@@ -77,7 +78,8 @@ class Trader:
         return self.scanner.adapters[market]
 
     def _title(self, market: str) -> str:
-        return self._adapter(market).title
+        adapter = self.scanner.adapters.get(market)  # площадку могли убрать из MARKETS, а позиции на ней остались
+        return adapter.title if adapter else market
 
     async def notify(self, text: str, buttons: tuple[tuple[Button, ...], ...] = ()) -> None:
         await self.scanner.bot.send(text, buttons=buttons)
@@ -450,12 +452,14 @@ class Trader:
         if not positions:
             return "Открытых позиций нет."
         lines = ["<b>Открытые позиции</b>"]
-        for p in positions:
+        for p in positions[:MAX_POSITION_BUTTONS]:
             line = f"#{p.id} {esc(p.title())} · {self._title(p.buy_market)} · {STATUS_NAMES[p.status]}"
             line += f" · куплено за {ton(p.cost)}"
             if p.list_price:
                 line += f", выставлено за {ton(p.list_price)}"
             lines.append(line)
+        if len(positions) > MAX_POSITION_BUTTONS:
+            lines.append(f"…и ещё {len(positions) - MAX_POSITION_BUTTONS}: закрыть можно командой /forget номер")
         lines.append("\nЗакрыть позицию, если разобрались вручную: кнопка ниже или /forget номер")
         return "\n".join(lines)
 
@@ -464,27 +468,33 @@ class Trader:
     def panel(self, note: str = "") -> Reply:
         """Состояние автопокупки с кнопками. note — строка о только что сделанном."""
         text = self.status_text()
+        refresh: Button = ("🔄 Обновить", "/autobuy")
         if not self.ab.enabled:
-            buttons: tuple[tuple[Button, ...], ...] = ((("🔄 Обновить", "/autobuy"),),)
+            buttons: tuple[tuple[Button, ...], ...] = ((refresh,),)
+        elif self.armed:
+            buttons = ((("⏹ Выключить", "/autobuy off"), refresh), (("📦 Позиции", "+/positions"),))
         else:
-            toggle = ("⏹ Выключить", "/autobuy off") if self.armed else ("✅ Включить", "/autobuy ask")
-            buttons = ((toggle, ("🔄 Обновить", "/autobuy")), (("📦 Позиции", "+/positions"),))
+            # live: подтверждение приходит отдельным сообщением, двойное нажатие его не проскочит;
+            # «Включить» стоит там, где у включённой автопокупки «Обновить», а не «Выключить»
+            enable = "+/autobuy ask" if self.ab.mode == "live" else "/autobuy on"
+            buttons = ((refresh, ("✅ Включить", enable)), (("📦 Позиции", "+/positions"),))
         return Reply(f"{note}\n\n{text}" if note else text, buttons)
 
     def confirm_arm(self) -> Reply:
-        """Реальные покупки включаются только после второго нажатия."""
+        """Реальные покупки включаются только после второго нажатия — в отдельном сообщении."""
         return Reply(
             "⚠️ <b>Включить автопокупку в режиме live?</b>\n"
             f"Бот будет сам покупать подарки за реальные TON: до {ton(self.ab.max_price)} TON за лот, "
             f"до {ton(self.ab.daily_limit)} TON и {self.ab.max_per_day} покупок за сутки, "
             f"не больше {self.ab.max_open} непроданных.",
-            ((("✅ Да, включить", "/autobuy on"), ("Отмена", "/autobuy")),),
+            ((("Отмена", "/autobuy"),), (("✅ Да, включить", "/autobuy on"),)),
         )
 
     def positions_panel(self, note: str = "") -> Reply:
-        """Открытые позиции, у каждой кнопка «Закрыть»."""
+        """Открытые позиции, у каждой кнопка «Закрыть» (подтверждение придёт отдельным сообщением)."""
         rows: list[tuple[Button, ...]] = [
-            ((f"🗑 Закрыть #{p.id}", f"/forget ask {p.id}"),) for p in self.store.positions(OPEN_STATUSES)[:20]
+            ((f"🗑 Закрыть #{p.id}", f"+/forget ask {p.id}"),)
+            for p in self.store.positions(OPEN_STATUSES)[:MAX_POSITION_BUTTONS]
         ]
         rows.append((("🔄 Обновить", "/positions"),))
         text = self.positions_text()
@@ -528,7 +538,7 @@ class Trader:
                 return Reply(
                     f"Закрыть позицию #{position.id} — {esc(position.title())}?\n"
                     "Бот перестанет следить за этим подарком. С самим подарком на площадке ничего не произойдёт.",
-                    ((("✅ Да, закрыть", f"/forget {position.id}"), ("Отмена", "/positions")),),
+                    ((("Отмена", "/positions"),), (("✅ Да, закрыть", f"/forget {position.id}"),)),
                 )
             self.store.update_position(position.id, status="closed", note="закрыта вручную")
             return self.positions_panel(f"Позиция #{position.id} закрыта.")

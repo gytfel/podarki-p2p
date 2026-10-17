@@ -187,10 +187,10 @@ def test_startup_message_shows_menu(store):
 def test_live_autobuy_needs_confirmation(store):
     world = World(store)  # режим live
     panel = run(world.scanner.on_command("/autobuy", []))
-    assert ("✅ Включить", "/autobuy ask") in all_buttons(panel)
+    assert ("✅ Включить", "+/autobuy ask") in all_buttons(panel)  # подтверждение — отдельным сообщением
     confirm = run(world.scanner.on_command("/autobuy", ["ask"]))
     assert "реальные TON" in confirm.text and not world.trader.armed  # одного нажатия мало
-    assert all_buttons(confirm) == [("✅ Да, включить", "/autobuy on"), ("Отмена", "/autobuy")]
+    assert confirm.buttons == ((("Отмена", "/autobuy"),), (("✅ Да, включить", "/autobuy on"),))
     armed = run(world.scanner.on_command("/autobuy", ["on"]))
     assert world.trader.armed and ("⏹ Выключить", "/autobuy off") in all_buttons(armed)
     off = run(world.scanner.on_command("/autobuy", ["off"]))
@@ -217,11 +217,11 @@ def test_close_position_button_asks_first(store):
     world.portals_snipe()
     world.poll()
     panel = run(world.scanner.on_command("/positions", []))
-    assert ("🗑 Закрыть #1", "/forget ask 1") in all_buttons(panel)
+    assert ("🗑 Закрыть #1", "+/forget ask 1") in all_buttons(panel)  # подтверждение — отдельным сообщением
 
     confirm = run(world.scanner.on_command("/forget", ["ask", "1"]))
     assert "Закрыть позицию #1" in confirm.text and world.store.positions(["listed"])  # ещё открыта
-    assert all_buttons(confirm) == [("✅ Да, закрыть", "/forget 1"), ("Отмена", "/positions")]
+    assert confirm.buttons == ((("Отмена", "/positions"),), (("✅ Да, закрыть", "/forget 1"),))
 
     closed = run(world.scanner.on_command("/forget", ["1"]))
     assert closed.text.startswith("Позиция #1 закрыта.") and not world.store.positions(["listed"])
@@ -239,3 +239,136 @@ def test_position_buttons_fit_telegram_limit(store):
     world.store._db.execute("UPDATE positions SET id = 123456789012")
     assert callback_data_fits(run(world.scanner.on_command("/positions", [])))
     assert callback_data_fits(run(world.scanner.on_command("/forget", ["ask", "123456789012"])))
+
+
+# ------------------------------------------------------------------ нажатия подряд в одну точку
+
+
+def tap_repeatedly(world, panel, row, col, times=6):
+    """Жмём в одно и то же место. Кнопка без «+» заменяет сообщение ответом, с «+» — ответ приходит
+    отдельно, а под пальцем остаётся то же сообщение. Возвращает, включена ли автопокупка после каждого нажатия."""
+    armed_after = []
+    for _ in range(times):
+        if row >= len(panel.buttons) or col >= len(panel.buttons[row]):
+            break  # в этом месте кнопки больше нет
+        data = panel.buttons[row][col][1]
+        command, *args = data.lstrip("+").split()
+        reply = run(world.scanner.on_command(command, args))
+        armed_after.append(world.trader.armed)
+        if not data.startswith("+") and hasattr(reply, "buttons"):
+            panel = reply
+    return armed_after
+
+
+def test_repeated_taps_never_turn_live_autobuy_back_on(store):
+    world = World(store)
+    world.arm()
+    armed_panel = run(world.scanner.on_command("/autobuy", []))
+    for row, buttons in enumerate(armed_panel.buttons):
+        for col in range(len(buttons)):
+            world.arm()
+            panel = run(world.scanner.on_command("/autobuy", []))
+            states = tap_repeatedly(world, panel, row, col)
+            if panel.buttons[row][col][1] == "/autobuy off":
+                assert not any(states), f"нажатия в [{row}][{col}] снова включили автопокупку: {states}"
+
+
+def test_double_tap_on_enable_does_not_skip_confirmation(store):
+    world = World(store)
+    panel = run(world.scanner.on_command("/autobuy", []))
+    row, col = next((r, c) for r, b in enumerate(panel.buttons) for c, x in enumerate(b) if x[0] == "✅ Включить")
+    states = tap_repeatedly(world, panel, row, col)
+    assert states and not any(states), f"повторные нажатия на «Включить» проскочили подтверждение: {states}"
+
+
+def test_repeated_taps_on_pause_never_resume(store):
+    world = World(store)
+    panel = run(world.scanner.on_command("/status", []))
+    row, col = next((r, c) for r, b in enumerate(panel.buttons) for c, x in enumerate(b) if x[1] == "/pause")
+    tap_repeatedly(world, panel, row, col)
+    assert world.scanner.paused
+
+
+def test_repeated_taps_on_close_never_close(store):
+    world = World(store)
+    world.arm()
+    world.portals_snipe()
+    world.poll()
+    panel = run(world.scanner.on_command("/positions", []))
+    tap_repeatedly(world, panel, 0, 0)
+    assert world.store.positions(["listed"])
+
+
+# ------------------------------------------------------------------ нажатия, сделанные пока бот был выключен
+
+
+def test_stale_press_is_not_executed():
+    bot, calls = make_bot()
+
+    async def handler(command, args):  # pragma: no cover
+        raise AssertionError("устаревшее нажатие выполнилось")
+
+    def old_query(request):  # Telegram отвечает так на давнее нажатие
+        return httpx.Response(400, json={"ok": False, "description": "Bad Request: query is too old and response "
+                                         "timeout expired or query ID is invalid"})
+
+    bot._client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: old_query(r) if r.url.path.endswith("answerCallbackQuery") else
+        (calls.append(("sendMessage", json.loads(r.content))) or httpx.Response(200, json={"ok": True, "result": True}))
+    ))
+    run(bot.handle_update(press(42, "/autobuy on"), handler))
+    [(method, body)] = calls
+    assert method == "sendMessage" and "не выполнено" in body["text"]
+
+
+def test_presses_queued_before_start_are_skipped_but_typed_commands_run():
+    backlog = [
+        press(42, "/autobuy on"),
+        {"update_id": 3, "message": {"chat": {"id": 42}, "text": "/status"}},
+    ]
+    calls = []
+
+    def handler_http(request):
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content) if request.content else {}
+        calls.append((method, body))
+        if method == "getUpdates":
+            result = backlog if body["offset"] == 0 else []
+            return httpx.Response(200, json={"ok": True, "result": result})
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    bot = TelegramBot("123:abc", 42, client=httpx.AsyncClient(transport=httpx.MockTransport(handler_http)), send_interval=0)
+    handler, seen = recorder("статус")
+    run(bot.skip_stale_presses(handler))
+    assert seen == [("/status", [])]  # напечатанная команда выполнена, нажатие — нет
+    texts = [body["text"] for method, body in calls if method == "sendMessage"]
+    assert "статус" in texts and any("не выполнено" in t for t in texts)
+
+
+# ------------------------------------------------------------------ устойчивость списка позиций
+
+
+def test_positions_of_removed_market_do_not_break_commands(store):
+    world = World(store)
+    world.arm()
+    world.portals_snipe()
+    world.poll()
+    del world.scanner.adapters["portals"]  # площадку убрали из MARKETS, позиция на ней осталась
+    assert "#1" in run(world.scanner.on_command("/positions", [])).text
+    assert "Закрыть позицию #1" in run(world.scanner.on_command("/forget", ["ask", "1"])).text
+    assert run(world.scanner.on_command("/forget", ["1"])).text.startswith("Позиция #1 закрыта.")
+
+
+def test_more_positions_than_buttons_are_listed_honestly(store):
+    from giftbot.evaluator import evaluate
+    from giftbot.trader import MAX_POSITION_BUTTONS
+    from conftest import lot
+
+    world = World(store, max_open=100)
+    cfg = world.scanner.cfg
+    for i in range(MAX_POSITION_BUTTONS + 3):
+        deal = evaluate(lot("portals", f"x{i}", 8.0, number=i), "portals", 12.0, 3, cfg.fees, cfg.thresholds)
+        world.store.open_position(deal, "bought")
+    panel = run(world.scanner.on_command("/positions", []))
+    assert len(panel.buttons) == MAX_POSITION_BUTTONS + 1  # 20 «Закрыть» + «Обновить»
+    assert "…и ещё 3" in panel.text and f"#{MAX_POSITION_BUTTONS + 1} " not in panel.text
