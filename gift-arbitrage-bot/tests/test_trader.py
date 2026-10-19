@@ -328,3 +328,17 @@ def test_positions_and_forget_commands(world):
     assert "Открытых позиций нет" in cmd(world, "/positions")
     assert "Автопокупка выключена" in cmd(world, "/autobuy", ["off"])
     assert "выключена командой" in cmd(world, "/autobuy")
+
+
+def test_cloudflare_block_during_buy_is_a_refusal_not_unknown(world):
+    from giftbot.markets.base import Blocked
+
+    world.arm()
+    world.portals.buy_errors = [Blocked("portals", "HTTP 403: Cloudflare")]
+    world.portals.buy_lands = False
+    world.portals_snipe()
+    world.poll()
+    assert world.store.positions(["failed"]) and not world.store.positions(["unknown"])
+    assert "owned" not in world.portals.calls  # заблокированную площадку инвентарём не дёргаем
+    assert world.scanner.health["portals"].tripped and not world.trader.armed
+    assert any("Cloudflare заблокировал запрос. Деньги не списаны" in m for m in world.bot.sent)

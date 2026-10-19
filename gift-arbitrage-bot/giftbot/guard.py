@@ -15,7 +15,8 @@ HINTS = {
     AuthError: "Обновите вход: python -m giftbot login (на сервере — снова запустите install.sh), "
     "либо данные авторизации в .env. "
     "Если ошибка 403 повторяется — запросы может блокировать Cloudflare.",
-    RateLimited: "Площадка просит реже: увеличьте POLL_INTERVAL_SEC и MIN_REQUEST_INTERVAL_SEC.",
+    RateLimited: "Площадка просит реже: увеличьте {market_upper}_POLL_INTERVAL_SEC (или общий POLL_INTERVAL_SEC) "
+    "и MIN_REQUEST_INTERVAL_SEC.",
 }
 
 

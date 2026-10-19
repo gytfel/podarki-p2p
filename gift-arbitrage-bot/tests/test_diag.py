@@ -33,3 +33,7 @@ def test_shape_shows_keys_and_samples_without_dumping_everything():
     assert "'floor_prices'" in text and "'toybear'" in text and "… ещё" not in text.split("'models'")[0]
     assert shape([]) == "[]" and shape([{"a": 1}]).startswith("[1 шт.")
     assert shape("x" * 100).endswith("…")
+
+
+def test_plain_text_cloudflare_answer_is_recognized():
+    assert cloudflare_verdict(403, "error code: 1020", {}).startswith("Cloudflare")

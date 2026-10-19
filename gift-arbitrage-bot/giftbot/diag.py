@@ -76,6 +76,8 @@ def cloudflare_verdict(status: int, text: str, headers: Any) -> str:
         verdict = "Cloudflare: доступ заблокирован"
     elif "cloudflare" in low and ("access denied" in low or "error" in low):
         verdict = "Cloudflare: доступ запрещён"
+    elif re.match(r"\s*error code:\s*1\d{3}", text, re.I):
+        verdict = "Cloudflare: доступ запрещён"
     else:
         return f"не Cloudflare: {' '.join(text.split())[:150]}"
     if code:

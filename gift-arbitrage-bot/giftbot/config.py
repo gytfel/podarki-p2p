@@ -191,6 +191,7 @@ def load_config(env_file: str | Path = ".env") -> Config:
         raise ConfigError("MAX_BUY_PRICE_TON должен быть больше MIN_BUY_PRICE_TON")
 
     autobuy = _load_autobuy(markets)
+    poll_interval = _float("POLL_INTERVAL_SEC", 8, 2)
 
     overrides = {}
     for market in KNOWN_MARKETS:
@@ -209,7 +210,7 @@ def load_config(env_file: str | Path = ".env") -> Config:
         thresholds=thresholds,
         min_buy_price=min_buy,
         max_buy_price=max_buy,
-        poll_interval=_float("POLL_INTERVAL_SEC", 8, 2),
+        poll_interval=poll_interval,
         poll_jitter=_float("POLL_JITTER_SEC", 4, 0),
         request_interval=_float("MIN_REQUEST_INTERVAL_SEC", 1.5, 0.3),
         floors_refresh=_float("FLOORS_REFRESH_SEC", 180, 30),
@@ -229,18 +230,16 @@ def load_config(env_file: str | Path = ".env") -> Config:
         autobuy=autobuy,
         market_proxies={m: v for m in KNOWN_MARKETS if (v := _get(f"{m.upper()}_PROXY"))},
         # Tonnel блокирует IP за частый опрос (и блокировка растёт от минут до часов), поэтому по умолчанию реже
-        market_poll_intervals={"tonnel": _float("TONNEL_POLL_INTERVAL_SEC", 30, 2)},
+        market_poll_intervals={"tonnel": _float("TONNEL_POLL_INTERVAL_SEC", max(30.0, poll_interval), 2)},
     )
 
 
 TONNEL_STATS_DEFAULT = "https://gifts2.tonnel.network/api/filterStats"
-# Прежнее значение по умолчанию: оно попало в .env из старого .env.example, сами его не выбирали
-TONNEL_STATS_LEGACY = "https://gifts3.tonnel.network/api/filterStats"
 
 
 def _tonnel_stats_url() -> str:
-    value = _get("TONNEL_STATS_URL")
-    return TONNEL_STATS_DEFAULT if value in (None, TONNEL_STATS_LEGACY) else value
+    # прежнее значение по умолчанию (gifts3) из старого .env.example переносит install.sh
+    return _get("TONNEL_STATS_URL") or TONNEL_STATS_DEFAULT
 
 
 def _load_autobuy(markets: tuple[str, ...]) -> AutobuyConfig:

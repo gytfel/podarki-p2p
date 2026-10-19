@@ -176,6 +176,9 @@ mkdir -p "$data_dir"
 chown -R "$APP_USER:$APP_USER" "$data_dir"
 chmod 700 "$data_dir"
 
+# флоры Tonnel теперь берём с gifts2, как веб-приложение Tonnel; прежнее значение по умолчанию переносим
+sed -i 's#^TONNEL_STATS_URL=https://gifts3\.tonnel\.network/api/filterStats$#TONNEL_STATS_URL=https://gifts2.tonnel.network/api/filterStats#' "$ENV_FILE"
+
 ask BOT_TOKEN "Токен бота от @BotFather (вида 123456:AA...)" "$TOKEN_RE"
 ask API_ID "API_ID с my.telegram.org (число)" "$API_ID_RE"
 ask API_HASH "API_HASH с my.telegram.org (32 символа)" "$API_HASH_RE"

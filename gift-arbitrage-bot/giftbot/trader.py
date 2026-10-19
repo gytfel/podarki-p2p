@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 from .config import Config
 from .evaluator import Deal
-from .markets.base import AuthError, BuyRejected, MarketAdapter, MarketError
+from .markets.base import AuthError, Blocked, BuyRejected, MarketAdapter, MarketError
 from .models import Listing, OwnedGift
 from .store import OPEN_STATUSES, SPENT_STATUSES, STATUS_NAMES, Position
 from .ui import Button, Reply
@@ -234,6 +234,12 @@ class Trader:
         failure: str | None = None
         try:
             await self._trade(market, self._adapter(market).buy, item)
+        except Blocked as error:  # Cloudflare не пропустил запрос: до площадки он не дошёл, денег не тронули
+            self.store.update_position(position_id, status="failed", note=str(error)[:500])
+            await self.notify(f"↩️ Не купилось #{position_id}: {name} — Cloudflare заблокировал запрос. Деньги не списаны.")
+            if self.scanner.health[market].fail(error, self.scanner.clock()):
+                await self.scanner._notify_trip(market, error)  # остановит площадку и выключит автопокупку
+            return None
         except (BuyRejected, AuthError) as error:
             self.store.update_position(position_id, status="failed", note=str(error)[:500])
             await self.notify(

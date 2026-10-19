@@ -227,7 +227,7 @@ class PortalsAdapter(MarketAdapter):
         if cached and self._clock() - cached[0] < self.models_ttl:
             return cached[1]
         data = await self._get("collections/filters", {"short_names": coll.short_name})
-        models = parse_filter_models(self.name, data, coll.short_name)
+        models = parse_filter_models(self.name, data, coll.short_name, expect_prices=coll.floor is not None)
         self._models[normalize(coll.name)] = (self._clock(), models)
         return models
 
@@ -291,11 +291,14 @@ MODEL_NAME_KEYS = ("name", "value", "model", "title")
 MODEL_PRICE_KEYS = ("floor_price", "floor", "min_price", "floorPrice", "price")
 
 
-def parse_filter_models(market: str, data: Any, short_name: str) -> dict[str, tuple[str, float | None]]:
+def parse_filter_models(
+    market: str, data: Any, short_name: str, *, expect_prices: bool = True
+) -> dict[str, tuple[str, float | None]]:
     """Модели коллекции из ответа collections/filters: нормализованное имя -> (как пишет Portals, флор или None).
 
     Старый формат (как в aportalsmp 1.3): {"floor_prices": {"<short_name>": {"models": {"Wizard": "12.5"}}}}.
     Новый формат: {"collections": {"<short_name>": {"models": [{...}, ...], ...}}, "collection_floor_price": ...}.
+    expect_prices=False — у коллекции сейчас нет лотов, и модели без цены там нормальны.
     """
     if not isinstance(data, dict):
         raise SchemaError(market, f"collections/filters: ожидался объект, пришло {type(data).__name__}")
@@ -309,8 +312,9 @@ def parse_filter_models(market: str, data: Any, short_name: str) -> dict[str, tu
     if isinstance(raw_models, dict):
         pairs = list(raw_models.items())
     elif isinstance(raw_models, list):
-        # У модели без лотов поля с ценой нет вовсе. Формат сменился, только если цены нет ни у одной модели
-        if raw_models and not any(isinstance(i, dict) and any(k in i for k in MODEL_PRICE_KEYS) for i in raw_models):
+        # У модели без лотов поля с ценой нет вовсе. Формат сменился, только если у коллекции есть лоты,
+        # а цены нет ни у одной модели
+        if expect_prices and raw_models and not any(isinstance(i, dict) and any(k in i for k in MODEL_PRICE_KEYS) for i in raw_models):
             first = raw_models[0]
             fields = ", ".join(sorted(map(str, first))) if isinstance(first, dict) else type(first).__name__
             raise SchemaError(market, f"модели: не нашёл цену ни у одной модели (поля: {fields})")

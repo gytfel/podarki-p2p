@@ -5,6 +5,7 @@ import asyncio
 import logging
 import math
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
@@ -196,9 +197,14 @@ class HttpClient:
 CLOUDFLARE_MARKERS = ("cloudflare", "cf-ray", "cf-error", "attention required", "just a moment", "you have been blocked")
 
 
+CLOUDFLARE_PLAIN = re.compile(r"\s*error code:\s*1\d{3}\b", re.I)  # так Cloudflare отвечает клиентам, не просящим HTML
+
+
 def is_cloudflare_page(text: str) -> bool:
-    """HTML-страница Cloudflare (блокировка или проверка браузера) вместо ответа площадки."""
+    """Страница Cloudflare (блокировка или проверка браузера) вместо ответа площадки."""
     head = text[:20000].lower()
+    if CLOUDFLARE_PLAIN.match(text[:200]):
+        return True
     return "<html" in head and any(marker in head for marker in CLOUDFLARE_MARKERS)
 
 

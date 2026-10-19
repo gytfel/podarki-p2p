@@ -312,4 +312,23 @@ def test_failed_probes_back_off(world):
     world.now[0] += 300
     run(world.scanner.poll_once("tonnel"))
     assert world.scanner.health["tonnel"].failed_probes == 2
-    assert world.auth.count == 0  # при блокировке проба не обновляет вход
+    assert world.auth.count == 2  # вход обновляется на каждой пробе: за часы блокировки он устаревает
+
+
+def test_ordinary_outage_is_probed_at_fixed_interval(world):
+    world.tonnel.errors = [TransportError("tonnel", "timeout")] * 5
+    for _ in range(3):
+        run(world.scanner.poll_once("tonnel"))  # три ошибки подряд — остановка
+    for _ in range(2):  # пробы не прошли, но это не блокировка — интервал не растёт
+        world.now[0] += 301
+        run(world.scanner.poll_once("tonnel"))
+    assert world.scanner.probe_interval("tonnel") == 300
+
+
+def test_probe_back_off_has_a_ceiling(world):
+    from giftbot.markets.base import Blocked
+
+    health = world.scanner.health["tonnel"]
+    health.last_error = Blocked("tonnel", "x")
+    health.failed_probes = 5000  # полтора месяца неудачных проб — без переполнения
+    assert world.scanner.probe_interval("tonnel") == 3600

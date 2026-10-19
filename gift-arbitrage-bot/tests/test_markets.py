@@ -396,3 +396,16 @@ def test_tonnel_model_without_rarity_in_stats_is_searched_by_prefix():
     [item] = run(adapter.cheapest(KEY, 6))  # лот с «Wizard (1.5%)» найден по «Wizard»
     assert item.listing_id == "101"
     assert json.loads(http.calls[-1][2]["filter"])["model"] == {"$regex": "^Wizard( \\(|$)"}
+
+
+def test_portals_collection_without_listings_is_not_a_format_change():
+    unpriced = {"collections": {"durovscap": {"models": [{"name": "Royal", "supply": 3}, {"name": "Black", "supply": 2}]}}}
+    # у коллекции нет лотов — модели без цены нормальны
+    assert parse_filter_models("portals", unpriced, "durovscap", expect_prices=False) == {
+        "royal": ("Royal", None), "black": ("Black", None)}
+    # у коллекции есть лоты, а цены нет ни у одной модели — значит, сменился формат
+    with pytest.raises(SchemaError, match="ни у одной модели"):
+        parse_filter_models("portals", unpriced, "durovscap")
+    adapter, _ = portals([("GET", "collections/filters", unpriced), ("GET", "collections?", COLLECTIONS)])
+    run(adapter.refresh())  # в COLLECTIONS у Durov's Cap floor_price = None
+    assert run(adapter.model_floor(("durov's cap", "royal"))) is None

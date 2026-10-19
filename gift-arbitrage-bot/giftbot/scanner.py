@@ -20,7 +20,7 @@ from typing import Any, Protocol
 from .config import Config
 from .evaluator import Deal, evaluate, is_anomaly, passes
 from .guard import MarketHealth, hint_for
-from .markets.base import AuthError, MarketAdapter, MarketError
+from .markets.base import AuthError, Blocked, MarketAdapter, MarketError, RateLimited
 from .models import Listing, ModelFloor
 from .store import Store
 from .ui import Button, Reply
@@ -164,16 +164,13 @@ class Scanner:
         """Пробный запрос к выключенной площадке: не ожила ли."""
         health = self.health[market]
         now = self.clock()
-        # после каждой неудачной пробы ждём вдвое дольше (5, 10, 20, 40 мин…, не больше часа):
-        # частые пробы продлевают блокировку Cloudflare
-        interval = min(self.cfg.probe_interval * 2**health.failed_probes, max(self.cfg.probe_interval, 3600.0))
-        if health.waiting_resume or now - health.last_probe < interval:
+        if health.waiting_resume or now - health.last_probe < self.probe_interval(market):
             return
         health.last_probe = now
         adapter = self.adapters[market]
         try:
-            if health.last_error is None or isinstance(health.last_error, AuthError):
-                await self.refresh_auth(market)  # вход обновляем, только если площадка жаловалась на него
+            # вход — запрос к Telegram, а не к площадке; за часы остановки он мог устареть
+            await self.refresh_auth(market)
             await adapter.latest(1)
             await adapter.refresh()
         except MarketError as error:
@@ -191,6 +188,15 @@ class Scanner:
                 f"✅ <b>{adapter.title}</b> снова отвечает. Отправьте /resume, чтобы продолжить.",
                 buttons=((("▶️ Продолжить", "+/resume"),),),
             )
+
+    def probe_interval(self, market: str) -> float:
+        """Пауза между пробами остановленной площадки. При блокировке и «слишком частых запросах» после каждой
+        неудачной пробы ждём вдвое дольше (5, 10, 20, 40 мин…, не больше часа): частые пробы продлевают блокировку."""
+        health = self.health[market]
+        if not isinstance(health.last_error, (Blocked, RateLimited)):
+            return self.cfg.probe_interval
+        slower = self.cfg.probe_interval * 2 ** min(health.failed_probes, 16)
+        return min(slower, max(self.cfg.probe_interval, 3600.0))
 
     # ------------------------------------------------------------ оценка лота
 
@@ -351,6 +357,7 @@ class Scanner:
             if self.cfg.auto_resume
             else "Когда площадка снова ответит, бот напишет — продолжить можно командой /resume."
         )
+        slower = ", после каждой неудачной проверки — реже, до раза в час" if isinstance(error, (Blocked, RateLimited)) else ""
         autobuy = ""
         buttons: list[tuple[Button, ...]] = [(("▶️ Включить сейчас", "+/resume"), ("📊 Статус", "+/status"))]
         if self.trader is not None and self.trader.disarm(f"{title}: сканирование остановлено"):
@@ -361,7 +368,7 @@ class Scanner:
             f"Причина: {esc(error.kind)} — {esc(error)}\n"
             f"Ошибок подряд: {self.health[market].consecutive}\n\n"
             f"{esc(hint_for(error))}\n"
-            f"Бот проверяет площадку раз в {ago(self.cfg.probe_interval)}. {resume}{autobuy}",
+            f"Бот проверяет площадку раз в {ago(self.cfg.probe_interval)}{slower}. {resume}{autobuy}",
             buttons=tuple(buttons),
         )
 

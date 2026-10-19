@@ -12,6 +12,7 @@ ROUTES = {
     "/auth": (401, {}, b'{"message": "expired"}'),
     "/cf": (403, {}, b"<html><title>Attention Required! | Cloudflare</title>Sorry, you have been blocked</html>"),
     "/forbidden": (403, {}, b'{"message": "auth expired"}'),
+    "/cf-text": (403, {}, b"error code: 1020"),
     "/slow-down": (429, {"Retry-After": "12"}, b""),
     "/boom": (502, {}, b"bad gateway"),
     "/teapot": (418, {}, b"teapot"),
@@ -69,6 +70,7 @@ def test_ok_json(server):
         ("/auth", AuthError),
         ("/forbidden", AuthError),
         ("/cf", Blocked),  # блокировка IP — не «вход истёк»
+        ("/cf-text", Blocked),  # короткий текстовый ответ Cloudflare
         ("/boom", TransportError),
         ("/teapot", HttpError),
         ("/html", SchemaError),

@@ -251,12 +251,12 @@ def test_per_market_proxy_overrides_common_proxy(env):
     assert cfg.proxy_for("portals") == "http://common:1"
 
 
-def test_tonnel_stats_url_moves_off_legacy_default(env):
+def test_tonnel_stats_url_defaults_to_gifts2_and_keeps_explicit_value(env):
     monkeypatch, path = env
-    monkeypatch.setenv("TONNEL_STATS_URL", "https://gifts3.tonnel.network/api/filterStats")  # из старого .env.example
+    monkeypatch.delenv("TONNEL_STATS_URL", raising=False)
     assert load_config(path).tonnel_stats_url == "https://gifts2.tonnel.network/api/filterStats"
-    monkeypatch.setenv("TONNEL_STATS_URL", "https://example.org/api/filterStats")  # своё значение не трогаем
-    assert load_config(path).tonnel_stats_url == "https://example.org/api/filterStats"
+    monkeypatch.setenv("TONNEL_STATS_URL", "https://gifts3.tonnel.network/api/filterStats")  # выбрали сами — не трогаем
+    assert load_config(path).tonnel_stats_url == "https://gifts3.tonnel.network/api/filterStats"
 
 
 def test_tonnel_is_polled_less_often_by_default(env):
@@ -264,3 +264,5 @@ def test_tonnel_is_polled_less_often_by_default(env):
     monkeypatch.delenv("TONNEL_POLL_INTERVAL_SEC", raising=False)
     cfg = load_config(path)
     assert cfg.poll_interval_for("tonnel") == 30 and cfg.poll_interval_for("portals") == cfg.poll_interval
+    monkeypatch.setenv("POLL_INTERVAL_SEC", "60")  # общий интервал медленнее — Tonnel не опрашиваем чаще него
+    assert load_config(path).poll_interval_for("tonnel") == 60
