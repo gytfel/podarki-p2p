@@ -86,6 +86,9 @@ async def cmd_login(cfg: Config) -> int:
             return 1
     except Exception as exc:  # неверный номер или код, нет связи с Telegram, неверные API_ID/API_HASH
         print(f"\n❌ Вход не выполнен: {type(exc).__name__}: {exc}")
+        hint = LOGIN_HINTS.get(type(exc).__name__)
+        if hint:
+            print(f"👉 {hint}")
         await client.disconnect()
         return 1
     print(f"\n✅ Вход выполнен: {me.first_name}" + (f" (@{me.username})." if me.username else "."))
@@ -100,7 +103,9 @@ async def cmd_login(cfg: Config) -> int:
     return 0
 
 
-PHONE_RE = re.compile(r"\+?[\d\s()-]{7,20}")
+# Только международный формат: без «+» Telegram читает начало номера как код страны
+# (964 856 63 84 превращается в Ирак, +964) и отвечает PhoneNumberInvalid
+PHONE_RE = re.compile(r"\+[\d\s()-]{7,20}")
 
 
 def ask_phone() -> str:
@@ -109,7 +114,34 @@ def ask_phone() -> str:
         value = input("Номер телефона (+7…): ").strip()
         if PHONE_RE.fullmatch(value):
             return value
-        print("Нужен номер телефона вашего Telegram-аккаунта, например +79991234567 (не токен бота).")
+        print(phone_hint(value))
+
+
+def phone_hint(value: str) -> str:
+    """Подсказка к неверно введённому номеру. Номер не исправляем сами — только предлагаем."""
+    if ":" in value:
+        return "Нужен номер телефона вашего Telegram-аккаунта, а не токен бота. Например: +79991234567"
+    digits = re.sub(r"\D", "", value)
+    guess = None
+    if len(digits) == 10 and digits.startswith("9"):  # 964 856 63 84
+        guess = "+7" + digits
+    elif len(digits) == 11 and digits[0] in "78":  # 8 964 856 63 84 или 7 964 …
+        guess = "+7" + digits[1:]
+    if guess:
+        return f"Номер нужен с плюсом и кодом страны. Если это российский номер, введите: {guess}"
+    return "Номер нужен с плюсом и кодом страны, например +79991234567"
+
+
+# Частые ошибки входа: понятная подсказка вместо английского текста Telegram
+LOGIN_HINTS = {
+    "PhoneNumberInvalidError": "Telegram не нашёл такой номер. Проверьте код страны: для России +7…",
+    "PhoneNumberBannedError": "Этот номер заблокирован в Telegram.",
+    "PhoneCodeInvalidError": "Неверный код из Telegram. Попробуйте ещё раз — придёт новый код.",
+    "PhoneCodeExpiredError": "Код устарел. Попробуйте ещё раз — придёт новый код.",
+    "PasswordHashInvalidError": "Неверный пароль двухэтапной проверки.",
+    "ApiIdInvalidError": "Неверные API_ID или API_HASH — проверьте их на my.telegram.org.",
+    "FloodWaitError": "Telegram просит подождать перед следующей попыткой входа (время — в ошибке выше).",
+}
 
 
 async def cmd_chatid(cfg: Config) -> int:

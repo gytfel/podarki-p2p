@@ -133,6 +133,16 @@ def test_login_phone_prompt_rejects_bot_token(monkeypatch, capsys):
     assert "не токен бота" in capsys.readouterr().out
 
 
+def test_login_phone_without_country_code_gets_a_hint(monkeypatch, capsys):
+    from giftbot.__main__ import ask_phone
+
+    # без «+» Telegram прочитал бы 964… как код Ирака и ответил PhoneNumberInvalid
+    answers = iter(["964 856 63 84", "8 964 856 63 84", "+7 964 856 63 84"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    assert ask_phone() == "+7 964 856 63 84"
+    assert capsys.readouterr().out.count("введите: +79648566384") == 2
+
+
 def test_ctrl_c_is_not_reported_as_success(monkeypatch, tmp_path):
     import giftbot.__main__ as cli
 
