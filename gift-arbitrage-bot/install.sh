@@ -2,11 +2,17 @@
 # Установка и обновление бота на VPS с Ubuntu 22.04+ или Debian 12+:
 #
 #   sudo bash install.sh
+#   sudo bash install.sh diag   — обновить код и снять ответы площадок с этого сервера (поиск причины ошибок)
 #
 # Первый запуск ставит Python, создаёт пользователя giftbot, копирует бота в /opt/gift-arbitrage-bot,
 # спрашивает токены, узнаёт ваш chat_id, входит в Telegram-аккаунт, проверяет площадки и включает
 # автозапуск. Повторный запуск обновляет код и зависимости, а настройки (.env) и папку data/ не трогает.
 set -euo pipefail
+MODE="${1:-install}"
+case $MODE in
+  install | diag) ;;
+  *) printf 'Неизвестный режим «%s». Можно: bash install.sh или bash install.sh diag\n' "$MODE" >&2; exit 2 ;;
+esac
 umask 022  # при строгой umask пользователь giftbot не смог бы прочитать код и библиотеки
 # «su» без минуса оставляет PATH без /usr/sbin, где лежат useradd и runuser
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
@@ -217,6 +223,18 @@ if [ -z "$(env_get PORTALS_AUTH_DATA)" ] || [ -z "$(env_get TONNEL_AUTH_DATA)" ]
 fi
 
 # ------------------------------------------------------------------ проверка и запуск
+
+if [ "$MODE" = diag ]; then
+  step "Диагностика площадок"
+  run_bot diag || warn "Диагностика завершилась с ошибкой, подробности выше"
+  if [ "$restart_on_abort" = 1 ]; then  # бот работал до диагностики — возвращаем как было
+    restart_on_abort=0
+    systemctl start "$SERVICE" || true
+  fi
+  echo
+  echo "Пришлите этот отчёт целиком. Он сохранён в $data_dir/diag.txt (показать снова: ${SUDO}cat $data_dir/diag.txt)"
+  exit 0
+fi
 
 step "Проверка: Telegram-бот и площадки"
 if run_bot check; then

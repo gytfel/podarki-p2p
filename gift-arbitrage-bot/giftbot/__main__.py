@@ -4,6 +4,7 @@
   chatid  — узнать свой chat_id для ADMIN_CHAT_ID
   check   — проверить бота и обе площадки одним запросом
   run     — запустить сканер
+  diag    — снять ответы площадок с этого сервера (для поиска причины ошибок)
 """
 from __future__ import annotations
 
@@ -258,12 +259,18 @@ async def cmd_run(cfg: Config) -> int:
     return 0
 
 
-COMMANDS = {"login": cmd_login, "chatid": cmd_chatid, "check": cmd_check, "run": cmd_run}
+async def cmd_diag(cfg: Config) -> int:
+    from .diag import run_diag
+
+    return await run_diag(cfg)
+
+
+COMMANDS = {"login": cmd_login, "chatid": cmd_chatid, "check": cmd_check, "run": cmd_run, "diag": cmd_diag}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m giftbot", description="Сканер выгодных лотов Telegram-подарков")
-    parser.add_argument("command", choices=list(COMMANDS), help="login | chatid | check | run")
+    parser.add_argument("command", choices=list(COMMANDS), help="login | chatid | check | run | diag")
     parser.add_argument("--env", default=".env", help="путь к файлу настроек (по умолчанию .env)")
     parser.add_argument("-v", "--verbose", action="store_true", help="подробный лог")
     args = parser.parse_args(argv)
