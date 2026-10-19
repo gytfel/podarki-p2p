@@ -48,7 +48,7 @@ def build_adapters(cfg: Config) -> dict[str, MarketAdapter]:
     adapters: dict[str, MarketAdapter] = {}
     for market in cfg.markets:
         limiter = RateLimiter(cfg.request_interval, jitter=cfg.request_interval / 2)
-        http = HttpClient(market, limiter, proxy=cfg.proxy)
+        http = HttpClient(market, limiter, proxy=cfg.proxy_for(market))
         if market == "portals":
             adapters[market] = PortalsAdapter(http, api_url=cfg.portals_api_url)
         elif market == "tonnel":

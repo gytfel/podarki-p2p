@@ -309,3 +309,52 @@ def test_tonnel_user_id_from_init_data():
     assert tonnel_user_id("tonnel", INIT_DATA) == 777
     with pytest.raises(Exception, match="ID пользователя"):
         tonnel_user_id("tonnel", "query_id=1")
+
+
+# ------------------------------------------------------------------ Portals: новый формат collections/filters
+
+from giftbot.markets.portals import parse_filter_models  # noqa: E402
+
+NEW_FILTERS = {
+    "collections": {
+        "toybear": {
+            "models": [
+                {"name": "Wizard", "floor_price": "12.5", "rarity_per_mille": 15, "count": 7, "photo_url": ""},
+                {"name": "Pilot (2%)", "floor_price": None, "rarity_per_mille": 20, "count": 0, "photo_url": ""},
+            ],
+            "symbols": [],
+            "backdrops": [],
+        }
+    },
+    "collection_photo_url": {"toybear": ""},
+    "collection_floor_price": {"toybear": "9.5"},
+}
+
+
+def test_portals_new_filters_format_is_parsed():
+    models = parse_filter_models("portals", NEW_FILTERS, "toybear")
+    assert models == {"wizard": ("Wizard", 12.5), "pilot": ("Pilot", None)}
+    # старый формат по-прежнему понимаем
+    assert parse_filter_models("portals", FILTERS, "toybear")["wizard"] == ("Wizard", 12.5)
+    assert parse_filter_models("portals", NEW_FILTERS, "unknown") == {}
+
+
+def test_portals_unknown_model_fields_are_named_in_the_error():
+    data = {"collections": {"toybear": {"models": [{"label": "Wizard", "cost": "1"}] * 3}}}
+    with pytest.raises(SchemaError, match="cost, label"):
+        parse_filter_models("portals", data, "toybear")
+    with pytest.raises(SchemaError, match="поля ответа: something"):
+        parse_filter_models("portals", {"something": {}}, "toybear")
+
+
+def test_portals_adapter_reads_new_filters_format():
+    adapter, _ = portals(
+        [
+            ("GET", "collections/filters", NEW_FILTERS),
+            ("GET", "collections?", COLLECTIONS),
+            ("GET", "nfts/search", {"results": [portals_nft("n1", 12.5)]}),
+        ]
+    )
+    run(adapter.refresh())
+    assert run(adapter.model_floor(KEY)).price == 12.5
+    assert [i.listing_id for i in run(adapter.cheapest(KEY, 6))] == ["n1"]

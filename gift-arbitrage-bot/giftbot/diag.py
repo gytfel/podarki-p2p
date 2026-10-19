@@ -13,7 +13,9 @@ from urllib.parse import urlencode
 
 from .auth import AuthProvider
 from .config import Config
+from .markets.base import SchemaError
 from .markets.portals import HEADERS as PORTALS_HEADERS
+from .markets.portals import parse_filter_models
 from .markets.tonnel import HEADERS as TONNEL_HEADERS
 from .markets.tonnel import SORT_LATEST
 
@@ -46,7 +48,7 @@ def shape(value: Any, depth: int = 0) -> str:
     """Структура JSON без лишних подробностей: ключи, типы, короткие примеры значений."""
     pad = "  " * depth
     if isinstance(value, dict):
-        if depth >= 3:
+        if depth >= 5:
             return f"{{…{len(value)} ключей}}"
         items = list(value.items())
         lines = [f"{{{len(value)} ключей"]
@@ -127,7 +129,7 @@ async def diag_portals(report: Report, cfg: Config, auth: str) -> None:
 
     async def get(path: str, params: dict) -> tuple[int | None, Any, str]:
         url = base + path + ("?" + urlencode(params, safe=",") if params else "")
-        status, _, text = await fetch("GET", url, headers=headers, proxy=cfg.proxy)
+        status, _, text = await fetch("GET", url, headers=headers, proxy=cfg.proxy_for("portals"))
         try:
             return status, json.loads(text), text
         except ValueError:
@@ -151,6 +153,21 @@ async def diag_portals(report: Report, cfg: Config, auth: str) -> None:
         label = f"{path}?{urlencode(params)}" if params else path
         report.add(f"\n{label}: HTTP {status}")
         report.add(shape(data) if data is not None else " ".join(text.split())[:300])
+        if "short_names" in params and data is not None:
+            report.add(f"Разбор ботом: {check_models(data, short)}")
+
+
+def check_models(data: Any, short_name: str) -> str:
+    """Как бот разберёт модели из этого ответа — то же, что делает сканер."""
+    try:
+        models = parse_filter_models("portals", data, short_name)
+    except SchemaError as exc:
+        return f"❌ {exc}"
+    priced = [(name, price) for name, price in models.values() if price is not None]
+    if not models:
+        return "❌ моделей не найдено"
+    sample = f", пример: {priced[0][0]} — {priced[0][1]:.2f} TON" if priced else ""
+    return f"✅ моделей {len(models)}, с ценой {len(priced)}{sample}"
 
 
 async def diag_tonnel(report: Report, cfg: Config, auth: str) -> None:
@@ -177,7 +194,7 @@ async def diag_tonnel(report: Report, cfg: Config, auth: str) -> None:
         for imp, headers in variants:
             await asyncio.sleep(1.0)
             status, resp_headers, text = await fetch(
-                "POST", url, impersonate=imp, headers=headers, json=payload, proxy=cfg.proxy
+                "POST", url, impersonate=imp, headers=headers, json=payload, proxy=cfg.proxy_for("tonnel")
             )
             label = f"{name} · {imp}" + (" + заголовки браузера" if headers is not TONNEL_HEADERS else "")
             if status is None:
@@ -196,6 +213,8 @@ async def run_diag(cfg: Config) -> int:
     report = Report()
     report.add("Диагностика площадок (ключи и данные входа в отчёт не попадают)")
     await server_location(report, cfg.proxy)
+    if cfg.proxy_for("tonnel") != cfg.proxy:
+        await server_location(report, cfg.proxy_for("tonnel"))  # куда ведёт TONNEL_PROXY
     provider = AuthProvider(cfg)
     try:
         await provider.start(cfg.markets)

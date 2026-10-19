@@ -239,3 +239,13 @@ def test_scanner_on_tonnel_only_starts_with_autobuy_off(env):
     cfg = load_config(path)
     assert cfg.markets == ("tonnel",)
     assert cfg.autobuy.markets == ()
+
+
+def test_per_market_proxy_overrides_common_proxy(env):
+    monkeypatch, path = env
+    monkeypatch.setenv("PROXY", "http://common:1")
+    monkeypatch.setenv("TONNEL_PROXY", "http://resi:2")
+    monkeypatch.delenv("PORTALS_PROXY", raising=False)
+    cfg = load_config(path)
+    assert cfg.proxy_for("tonnel") == "http://resi:2"
+    assert cfg.proxy_for("portals") == "http://common:1"

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .evaluator import Fees, Thresholds
@@ -127,6 +127,10 @@ class Config:
     tonnel_balance_url: str
     tonnel_trade_url: str
     autobuy: AutobuyConfig
+    market_proxies: dict[str, str] = field(default_factory=dict)  # свой прокси для площадки, иначе PROXY
+
+    def proxy_for(self, market: str) -> str | None:
+        return self.market_proxies.get(market) or self.proxy
 
     @property
     def session_path(self) -> Path:
@@ -219,6 +223,7 @@ def load_config(env_file: str | Path = ".env") -> Config:
         tonnel_balance_url=_get("TONNEL_BALANCE_URL") or "https://gifts2.tonnel.network/api/balance/info",
         tonnel_trade_url=_get("TONNEL_TRADE_URL") or "https://gifts.coffin.meme/api/",
         autobuy=autobuy,
+        market_proxies={m: v for m in KNOWN_MARKETS if (v := _get(f"{m.upper()}_PROXY"))},
     )
 
 
