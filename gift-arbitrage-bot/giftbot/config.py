@@ -128,9 +128,13 @@ class Config:
     tonnel_trade_url: str
     autobuy: AutobuyConfig
     market_proxies: dict[str, str] = field(default_factory=dict)  # свой прокси для площадки, иначе PROXY
+    market_poll_intervals: dict[str, float] = field(default_factory=dict)  # свой интервал опроса, иначе POLL_INTERVAL_SEC
 
     def proxy_for(self, market: str) -> str | None:
         return self.market_proxies.get(market) or self.proxy
+
+    def poll_interval_for(self, market: str) -> float:
+        return self.market_poll_intervals.get(market, self.poll_interval)
 
     @property
     def session_path(self) -> Path:
@@ -219,12 +223,24 @@ def load_config(env_file: str | Path = ".env") -> Config:
         auth_overrides=overrides,
         portals_api_url=_get("PORTALS_API_URL") or "https://portal-market.com/api/",
         tonnel_page_url=_get("TONNEL_PAGE_URL") or "https://gifts2.tonnel.network/api/pageGifts",
-        tonnel_stats_url=_get("TONNEL_STATS_URL") or "https://gifts3.tonnel.network/api/filterStats",
+        tonnel_stats_url=_tonnel_stats_url(),
         tonnel_balance_url=_get("TONNEL_BALANCE_URL") or "https://gifts2.tonnel.network/api/balance/info",
         tonnel_trade_url=_get("TONNEL_TRADE_URL") or "https://gifts.coffin.meme/api/",
         autobuy=autobuy,
         market_proxies={m: v for m in KNOWN_MARKETS if (v := _get(f"{m.upper()}_PROXY"))},
+        # Tonnel блокирует IP за частый опрос (и блокировка растёт от минут до часов), поэтому по умолчанию реже
+        market_poll_intervals={"tonnel": _float("TONNEL_POLL_INTERVAL_SEC", 30, 2)},
     )
+
+
+TONNEL_STATS_DEFAULT = "https://gifts2.tonnel.network/api/filterStats"
+# Прежнее значение по умолчанию: оно попало в .env из старого .env.example, сами его не выбирали
+TONNEL_STATS_LEGACY = "https://gifts3.tonnel.network/api/filterStats"
+
+
+def _tonnel_stats_url() -> str:
+    value = _get("TONNEL_STATS_URL")
+    return TONNEL_STATS_DEFAULT if value in (None, TONNEL_STATS_LEGACY) else value
 
 
 def _load_autobuy(markets: tuple[str, ...]) -> AutobuyConfig:

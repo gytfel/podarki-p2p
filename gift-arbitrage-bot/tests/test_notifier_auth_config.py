@@ -249,3 +249,18 @@ def test_per_market_proxy_overrides_common_proxy(env):
     cfg = load_config(path)
     assert cfg.proxy_for("tonnel") == "http://resi:2"
     assert cfg.proxy_for("portals") == "http://common:1"
+
+
+def test_tonnel_stats_url_moves_off_legacy_default(env):
+    monkeypatch, path = env
+    monkeypatch.setenv("TONNEL_STATS_URL", "https://gifts3.tonnel.network/api/filterStats")  # из старого .env.example
+    assert load_config(path).tonnel_stats_url == "https://gifts2.tonnel.network/api/filterStats"
+    monkeypatch.setenv("TONNEL_STATS_URL", "https://example.org/api/filterStats")  # своё значение не трогаем
+    assert load_config(path).tonnel_stats_url == "https://example.org/api/filterStats"
+
+
+def test_tonnel_is_polled_less_often_by_default(env):
+    monkeypatch, path = env
+    monkeypatch.delenv("TONNEL_POLL_INTERVAL_SEC", raising=False)
+    cfg = load_config(path)
+    assert cfg.poll_interval_for("tonnel") == 30 and cfg.poll_interval_for("portals") == cfg.poll_interval

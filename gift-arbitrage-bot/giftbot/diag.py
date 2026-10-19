@@ -182,15 +182,21 @@ async def diag_tonnel(report: Report, cfg: Config, auth: str) -> None:
         "user_auth": auth,
     }
     stats = {"authData": auth}
-    gifts2_stats = re.sub(r"//gifts\d*\.", "//gifts2.", cfg.tonnel_stats_url)
+    # второй адрес флоров для сравнения: gifts2 <-> gifts3
+    other = re.sub(r"//gifts(\d)\.", lambda m: "//gifts" + ("3" if m.group(1) == "2" else "2") + ".", cfg.tonnel_stats_url)
     targets = [
         ("pageGifts", cfg.tonnel_page_url, page),
         ("filterStats", cfg.tonnel_stats_url, stats),
     ]
-    if gifts2_stats != cfg.tonnel_stats_url:
-        targets.append(("filterStats (gifts2)", gifts2_stats, stats))
+    if other != cfg.tonnel_stats_url:
+        host = re.search(r"//([^/]+)", other)
+        targets.append((f"filterStats ({host.group(1) if host else other})", other, stats))
     variants = [(imp, TONNEL_HEADERS) for imp in IMPERSONATE] + [("chrome110", {**TONNEL_HEADERS, **BROWSER_HEADERS})]
+    blocked = False
     for name, url, payload in targets:
+        if blocked:
+            report.add(f"{name}: не проверяю — IP уже заблокирован, лишние запросы только продлевают блокировку")
+            continue
         for imp, headers in variants:
             await asyncio.sleep(1.0)
             status, resp_headers, text = await fetch(
@@ -200,13 +206,18 @@ async def diag_tonnel(report: Report, cfg: Config, auth: str) -> None:
             if status is None:
                 report.add(f"{label}: нет ответа ({text[:120]})")
                 continue
-            report.add(f"{label}: HTTP {status} — {cloudflare_verdict(status, text, resp_headers)}")
+            verdict = cloudflare_verdict(status, text, resp_headers)
+            report.add(f"{label}: HTTP {status} — {verdict}")
             if 200 <= status < 300:
                 try:
                     report.add(shape(json.loads(text)))
                 except ValueError:
                     report.add(" ".join(text.split())[:200])
                 break  # этот адрес отвечает — остальные варианты не нужны
+            if "JS-challenge" not in verdict:
+                # другой «отпечаток браузера» помогает только против проверки браузера, не против блокировки
+                blocked = verdict.startswith("Cloudflare")
+                break
 
 
 async def run_diag(cfg: Config) -> int:

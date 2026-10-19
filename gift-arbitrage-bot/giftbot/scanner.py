@@ -164,16 +164,21 @@ class Scanner:
         """Пробный запрос к выключенной площадке: не ожила ли."""
         health = self.health[market]
         now = self.clock()
-        if health.waiting_resume or now - health.last_probe < self.cfg.probe_interval:
+        # после каждой неудачной пробы ждём вдвое дольше (5, 10, 20, 40 мин…, не больше часа):
+        # частые пробы продлевают блокировку Cloudflare
+        interval = min(self.cfg.probe_interval * 2**health.failed_probes, max(self.cfg.probe_interval, 3600.0))
+        if health.waiting_resume or now - health.last_probe < interval:
             return
         health.last_probe = now
         adapter = self.adapters[market]
         try:
-            await self.refresh_auth(market)
+            if health.last_error is None or isinstance(health.last_error, AuthError):
+                await self.refresh_auth(market)  # вход обновляем, только если площадка жаловалась на него
             await adapter.latest(1)
             await adapter.refresh()
         except MarketError as error:
             health.last_error = error
+            health.failed_probes += 1
             log.info("%s: пробный запрос не прошёл: %s", market, error.human())
             return
         if self.cfg.auto_resume:
@@ -513,7 +518,7 @@ class Scanner:
                 await self.poll_once(market)
             except Exception:
                 log.exception("Сбой в цикле опроса %s", market)
-            await self._sleep(self.cfg.poll_interval + random.uniform(0, self.cfg.poll_jitter))
+            await self._sleep(self.cfg.poll_interval_for(market) + random.uniform(0, self.cfg.poll_jitter))
 
     async def _periodic(self, interval: float, func: Callable[[], Awaitable[None]]) -> None:
         while not self._stop.is_set():

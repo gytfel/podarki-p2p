@@ -358,3 +358,41 @@ def test_portals_adapter_reads_new_filters_format():
     run(adapter.refresh())
     assert run(adapter.model_floor(KEY)).price == 12.5
     assert [i.listing_id for i in run(adapter.cheapest(KEY, 6))] == ["n1"]
+
+
+def test_portals_thin_collection_keeps_models_without_listings():
+    # у модели без лотов Portals не присылает floor_price вовсе
+    data = {"collections": {"toybear": {"models": [
+        {"name": "Wizard", "floor_price": "12.5", "supply": 100},
+        {"name": "Pilot", "supply": 50},
+        {"name": "Ghost", "supply": 40},
+        {"name": "Witch", "supply": 30},
+    ]}}}
+    models = parse_filter_models("portals", data, "toybear")
+    assert models == {"wizard": ("Wizard", 12.5), "pilot": ("Pilot", None), "ghost": ("Ghost", None),
+                      "witch": ("Witch", None)}
+
+
+def test_portals_buy_refused_with_http_200_is_a_rejection():
+    refusal = {"total_purchased": 0, "total_failed": 1,
+               "purchase_results": [{"status": "failed", "reason": "INSUFFICIENT_BALANCE"}]}
+    adapter, _ = portals([("POST", "nfts", refusal)])
+    with pytest.raises(BuyRejected, match="INSUFFICIENT_BALANCE"):
+        run(adapter.buy(Listing("portals", "n1", "Toy Bear", "Wizard", 12.3, 7)))
+    adapter, _ = portals([("POST", "nfts", {"total_purchased": 1, "total_failed": 0, "purchase_results": []})])
+    run(adapter.buy(Listing("portals", "n1", "Toy Bear", "Wizard", 12.3, 7)))  # успех — без ошибки
+
+
+def test_tonnel_model_without_rarity_in_stats_is_searched_by_prefix():
+    from giftbot.markets.tonnel import model_filter
+
+    assert model_filter("Wizard (1.5%)") == "Wizard (1.5%)"
+    regex = model_filter("Ghost")["$regex"]
+    import re as _re
+    assert _re.match(regex, "Ghost (1.5%)") and _re.match(regex, "Ghost") and not _re.match(regex, "Ghostly (2%)")
+    stats = {"status": "success", "data": {"Toy Bear_Wizard": {"floorPrice": 11, "howMany": 7}}}
+    adapter, http = tonnel([("POST", "filterStats", stats), ("POST", "pageGifts", [tonnel_gift(101, 11)])])
+    run(adapter.refresh())
+    [item] = run(adapter.cheapest(KEY, 6))  # лот с «Wizard (1.5%)» найден по «Wizard»
+    assert item.listing_id == "101"
+    assert json.loads(http.calls[-1][2]["filter"])["model"] == {"$regex": "^Wizard( \\(|$)"}

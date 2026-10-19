@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -33,7 +34,7 @@ from .base import (
 log = logging.getLogger(__name__)
 
 DEFAULT_PAGE_URL = "https://gifts2.tonnel.network/api/pageGifts"
-DEFAULT_STATS_URL = "https://gifts3.tonnel.network/api/filterStats"
+DEFAULT_STATS_URL = "https://gifts2.tonnel.network/api/filterStats"  # туда же ходит веб-приложение Tonnel
 DEFAULT_BALANCE_URL = "https://gifts2.tonnel.network/api/balance/info"
 DEFAULT_TRADE_URL = "https://gifts.coffin.meme/api/"  # торговый сервер Tonnel
 MAX_LIMIT = 30  # больше Tonnel за раз не отдаёт
@@ -160,7 +161,9 @@ class TonnelAdapter(MarketAdapter):
             return None  # модели не было при последнем обновлении кэша — запросить нечем
         # Запрашиваем вживую, даже если по кэшу лотов нет: кэш обновляется раз в FLOORS_REFRESH_SEC
         flt = self._base_filter()
-        flt["gift_name"], flt["model"] = names
+        collection, model = names
+        flt["gift_name"] = collection
+        flt["model"] = model_filter(model)
         items = await self._page(flt, SORT_PRICE_ASC, limit, "дешёвые лоты модели")
         return only_key(self.name, items, key)
 
@@ -288,6 +291,14 @@ class TonnelAdapter(MarketAdapter):
             backdrop=strip_rarity(item["backdrop"]) if isinstance(item.get("backdrop"), str) else None,
             symbol=strip_rarity(item["symbol"]) if isinstance(item.get("symbol"), str) else None,
         )
+
+
+def model_filter(model: str) -> Any:
+    """Фильтр по модели для pageGifts. В лотах модель с редкостью («Ghost (1.5%)»), а в filterStats её может
+    не быть («Ghost») — тогда ищем по началу названия, как tonnelmp."""
+    if strip_rarity(model) != model:
+        return model
+    return {"$regex": f"^{re.escape(model)}( \\(|$)"}
 
 
 def tonnel_user_id(market: str, init_data: str) -> int:

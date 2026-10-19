@@ -165,9 +165,14 @@ class PortalsAdapter(MarketAdapter):
     async def buy(self, listing: Listing) -> None:
         payload = {"nft_details": [{"id": listing.listing_id, "price": format_price(listing.price)}]}
         try:
-            await self._post("nfts", payload)
+            data = await self._post("nfts", payload)
         except HttpError as exc:  # 4xx: площадка отказала, покупка не прошла
             raise BuyRejected(self.name, str(exc)) from exc
+        # Отказ может прийти и с кодом 200: {"total_purchased": 0, "purchase_results": [{"reason": ...}]}
+        if isinstance(data, dict) and "total_purchased" in data and not data.get("total_purchased"):
+            results = data.get("purchase_results") or []
+            reasons = [str(r["reason"]) for r in results if isinstance(r, dict) and r.get("reason")]
+            raise BuyRejected(self.name, f"покупка не прошла: {', '.join(reasons) or 'причина не указана'}")
 
     async def owned(self) -> Inventory:
         gifts: list[OwnedGift] = []
@@ -304,6 +309,11 @@ def parse_filter_models(market: str, data: Any, short_name: str) -> dict[str, tu
     if isinstance(raw_models, dict):
         pairs = list(raw_models.items())
     elif isinstance(raw_models, list):
+        # У модели без лотов поля с ценой нет вовсе. Формат сменился, только если цены нет ни у одной модели
+        if raw_models and not any(isinstance(i, dict) and any(k in i for k in MODEL_PRICE_KEYS) for i in raw_models):
+            first = raw_models[0]
+            fields = ", ".join(sorted(map(str, first))) if isinstance(first, dict) else type(first).__name__
+            raise SchemaError(market, f"модели: не нашёл цену ни у одной модели (поля: {fields})")
         pairs = parse_items(market, raw_models, lambda item: _model_pair(market, item), "модели коллекции")
     else:
         raise SchemaError(market, "collections/filters: нет списка моделей")
@@ -325,9 +335,7 @@ def _model_pair(market: str, item: Any) -> tuple[str, Any]:
     if name is None:
         raise SchemaError(market, f"модель: не нашёл название среди полей {fields}")
     price_key = next((k for k in MODEL_PRICE_KEYS if k in item), None)
-    if price_key is None:
-        raise SchemaError(market, f"модель: не нашёл цену среди полей {fields}")
-    return name, item[price_key]  # цена может быть null — у модели нет лотов
+    return name, item[price_key] if price_key else None  # нет цены — у модели сейчас нет лотов
 
 
 def _amount(market: str, value: Any, what: str) -> float:

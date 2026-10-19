@@ -1,5 +1,6 @@
 from .base import (
     AuthError,
+    Blocked,
     HttpClient,
     HttpError,
     MarketAdapter,
@@ -14,6 +15,7 @@ from .tonnel import TonnelAdapter
 
 __all__ = [
     "AuthError",
+    "Blocked",
     "HttpClient",
     "HttpError",
     "MarketAdapter",

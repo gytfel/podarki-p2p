@@ -285,3 +285,31 @@ def test_run_loop_starts_polls_and_stops_cleanly(store):
     assert any("Выгодный лот" in m for m in world.bot.sent)
     assert world.bot.sent[-1] == "⏹ Сканер остановлен."
     assert world.tonnel.calls.count("latest") >= 3
+
+
+def test_cloudflare_block_stops_market_at_once_without_relogin(world):
+    from giftbot.markets.base import Blocked
+
+    world.tonnel.errors = [Blocked("tonnel", "HTTP 403: Cloudflare")]
+    run(world.scanner.poll_once("tonnel"))
+    assert world.scanner.health["tonnel"].tripped
+    assert world.auth.count == 0  # вход из Telegram не дёргали
+    assert "TONNEL_PROXY" in world.bot.sent[-1]
+
+
+def test_failed_probes_back_off(world):
+    from giftbot.markets.base import Blocked
+
+    world.tonnel.errors = [Blocked("tonnel", "x")] * 3
+    run(world.scanner.poll_once("tonnel"))  # остановка
+    world.now[0] += 301
+    run(world.scanner.poll_once("tonnel"))  # проба 1 не прошла
+    assert world.scanner.health["tonnel"].failed_probes == 1
+    calls = len(world.tonnel.calls)
+    world.now[0] += 301
+    run(world.scanner.poll_once("tonnel"))  # через 5 минут ещё рано: теперь ждём 10
+    assert len(world.tonnel.calls) == calls
+    world.now[0] += 300
+    run(world.scanner.poll_once("tonnel"))
+    assert world.scanner.health["tonnel"].failed_probes == 2
+    assert world.auth.count == 0  # при блокировке проба не обновляет вход

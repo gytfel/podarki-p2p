@@ -5,12 +5,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from giftbot.markets.base import AuthError, HttpClient, HttpError, RateLimited, RateLimiter, SchemaError, TransportError
+from giftbot.markets.base import AuthError, Blocked, HttpClient, HttpError, RateLimited, RateLimiter, SchemaError, TransportError
 
 ROUTES = {
     "/ok": (200, {}, b'{"results": []}'),
     "/auth": (401, {}, b'{"message": "expired"}'),
-    "/cf": (403, {}, b"<html>Just a moment...</html>"),
+    "/cf": (403, {}, b"<html><title>Attention Required! | Cloudflare</title>Sorry, you have been blocked</html>"),
+    "/forbidden": (403, {}, b'{"message": "auth expired"}'),
     "/slow-down": (429, {"Retry-After": "12"}, b""),
     "/boom": (502, {}, b"bad gateway"),
     "/teapot": (418, {}, b"teapot"),
@@ -64,7 +65,14 @@ def test_ok_json(server):
 
 @pytest.mark.parametrize(
     "path,error",
-    [("/auth", AuthError), ("/cf", AuthError), ("/boom", TransportError), ("/teapot", HttpError), ("/html", SchemaError)],
+    [
+        ("/auth", AuthError),
+        ("/forbidden", AuthError),
+        ("/cf", Blocked),  # блокировка IP — не «вход истёк»
+        ("/boom", TransportError),
+        ("/teapot", HttpError),
+        ("/html", SchemaError),
+    ],
 )
 def test_status_mapping(server, path, error):
     with pytest.raises(error):
