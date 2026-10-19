@@ -312,14 +312,18 @@ class Scanner:
             "",
             f"Купить на {buy_title}: {ton(item.price)} TON{fee_note}",
             f"Выставить на {sell_title}: ~{ton(deal.resale_price)} TON "
-            f"(самый дешёвый сейчас {ton(deal.ref_price)}, лотов: {deal.ref_count})",
+            f"(самый дешёвый «{esc(item.model)}» сейчас {ton(deal.ref_price)}, "
+            f"проверено лотов этой модели: {deal.ref_count})",
             f"На руки после комиссии: {ton(deal.proceeds)} TON",
         ]
         if deal.transfer_cost:
             lines.append(f"Перенос между площадками: −{ton(deal.transfer_cost)} TON")
         lines += ["", f"<b>Прибыль: {deal.profit:+.2f} TON ({deal.profit_pct * 100:+.1f}%)</b>"]
 
-        notes = []
+        notes = [
+            "Цена перепродажи — по выставленным лотам этой модели, а не по реальным продажам: "
+            "проверьте в приложении, по чём её покупают."
+        ]
         if anomaly:
             notes.append(
                 f"⚠️ Цена в {deal.ref_price / item.price:.1f} раза ниже рынка. Это может быть ошибка данных "

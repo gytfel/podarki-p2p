@@ -106,7 +106,7 @@ def test_same_market_snipe(world):
     [message] = world.bot.sent
     assert "внутри Portals" in message
     assert "Перенос" not in message
-    assert "самый дешёвый сейчас 12.00, лотов: 3" in message
+    assert "самый дешёвый «Wizard» сейчас 12.00, проверено лотов этой модели: 3" in message
 
 
 def test_same_market_snipe_when_cached_floor_is_the_listing_itself(world):
@@ -118,7 +118,7 @@ def test_same_market_snipe_when_cached_floor_is_the_listing_itself(world):
 
     [message] = world.bot.sent
     assert "внутри Portals" in message
-    assert "самый дешёвый сейчас 12.00, лотов: 3" in message
+    assert "самый дешёвый «Wizard» сейчас 12.00, проверено лотов этой модели: 3" in message
 
 
 def test_own_floor_with_too_few_listings_is_not_checked_live(world):
