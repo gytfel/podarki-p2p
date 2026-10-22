@@ -5,6 +5,7 @@ import asyncio
 import logging
 import math
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
@@ -33,6 +34,12 @@ class MarketError(Exception):
 
 class TransportError(MarketError):
     kind = "площадка или сеть недоступны"
+
+
+class Blocked(TransportError):
+    """Cloudflare площадки не пускает IP сервера. Повторы только продлевают блокировку: нужен другой IP."""
+
+    kind = "площадка блокирует IP сервера (Cloudflare)"
 
 
 class AuthError(MarketError):
@@ -163,6 +170,8 @@ class HttpClient:
             retry_after = _parse_retry_after(resp.headers.get("retry-after"))
             self.limiter.penalize(retry_after or 30.0)
             raise RateLimited(self.market, f"HTTP 429, пауза {retry_after or 30:.0f} с", retry_after)
+        if status == 403 and is_cloudflare_page(resp.text):
+            raise Blocked(self.market, "HTTP 403: Cloudflare не пускает запросы с этого сервера (страница блокировки)")
         if status in (401, 403):
             raise AuthError(
                 self.market,
@@ -183,6 +192,20 @@ class HttpClient:
         if self._session is not None:
             await self._session.close()
             self._session = None
+
+
+CLOUDFLARE_MARKERS = ("cloudflare", "cf-ray", "cf-error", "attention required", "just a moment", "you have been blocked")
+
+
+CLOUDFLARE_PLAIN = re.compile(r"\s*error code:\s*1\d{3}\b", re.I)  # так Cloudflare отвечает клиентам, не просящим HTML
+
+
+def is_cloudflare_page(text: str) -> bool:
+    """Страница Cloudflare (блокировка или проверка браузера) вместо ответа площадки."""
+    head = text[:20000].lower()
+    if CLOUDFLARE_PLAIN.match(text[:200]):
+        return True
+    return "<html" in head and any(marker in head for marker in CLOUDFLARE_MARKERS)
 
 
 def _parse_retry_after(value: str | None) -> float | None:

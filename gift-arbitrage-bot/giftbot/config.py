@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .evaluator import Fees, Thresholds
@@ -127,6 +127,14 @@ class Config:
     tonnel_balance_url: str
     tonnel_trade_url: str
     autobuy: AutobuyConfig
+    market_proxies: dict[str, str] = field(default_factory=dict)  # свой прокси для площадки, иначе PROXY
+    market_poll_intervals: dict[str, float] = field(default_factory=dict)  # свой интервал опроса, иначе POLL_INTERVAL_SEC
+
+    def proxy_for(self, market: str) -> str | None:
+        return self.market_proxies.get(market) or self.proxy
+
+    def poll_interval_for(self, market: str) -> float:
+        return self.market_poll_intervals.get(market, self.poll_interval)
 
     @property
     def session_path(self) -> Path:
@@ -183,6 +191,7 @@ def load_config(env_file: str | Path = ".env") -> Config:
         raise ConfigError("MAX_BUY_PRICE_TON должен быть больше MIN_BUY_PRICE_TON")
 
     autobuy = _load_autobuy(markets)
+    poll_interval = _float("POLL_INTERVAL_SEC", 8, 2)
 
     overrides = {}
     for market in KNOWN_MARKETS:
@@ -201,7 +210,7 @@ def load_config(env_file: str | Path = ".env") -> Config:
         thresholds=thresholds,
         min_buy_price=min_buy,
         max_buy_price=max_buy,
-        poll_interval=_float("POLL_INTERVAL_SEC", 8, 2),
+        poll_interval=poll_interval,
         poll_jitter=_float("POLL_JITTER_SEC", 4, 0),
         request_interval=_float("MIN_REQUEST_INTERVAL_SEC", 1.5, 0.3),
         floors_refresh=_float("FLOORS_REFRESH_SEC", 180, 30),
@@ -215,11 +224,22 @@ def load_config(env_file: str | Path = ".env") -> Config:
         auth_overrides=overrides,
         portals_api_url=_get("PORTALS_API_URL") or "https://portal-market.com/api/",
         tonnel_page_url=_get("TONNEL_PAGE_URL") or "https://gifts2.tonnel.network/api/pageGifts",
-        tonnel_stats_url=_get("TONNEL_STATS_URL") or "https://gifts3.tonnel.network/api/filterStats",
+        tonnel_stats_url=_tonnel_stats_url(),
         tonnel_balance_url=_get("TONNEL_BALANCE_URL") or "https://gifts2.tonnel.network/api/balance/info",
         tonnel_trade_url=_get("TONNEL_TRADE_URL") or "https://gifts.coffin.meme/api/",
         autobuy=autobuy,
+        market_proxies={m: v for m in KNOWN_MARKETS if (v := _get(f"{m.upper()}_PROXY"))},
+        # Tonnel блокирует IP за частый опрос (и блокировка растёт от минут до часов), поэтому по умолчанию реже
+        market_poll_intervals={"tonnel": _float("TONNEL_POLL_INTERVAL_SEC", max(30.0, poll_interval), 2)},
     )
+
+
+TONNEL_STATS_DEFAULT = "https://gifts2.tonnel.network/api/filterStats"
+
+
+def _tonnel_stats_url() -> str:
+    # прежнее значение по умолчанию (gifts3) из старого .env.example переносит install.sh
+    return _get("TONNEL_STATS_URL") or TONNEL_STATS_DEFAULT
 
 
 def _load_autobuy(markets: tuple[str, ...]) -> AutobuyConfig:

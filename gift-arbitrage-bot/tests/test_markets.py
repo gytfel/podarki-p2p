@@ -309,3 +309,103 @@ def test_tonnel_user_id_from_init_data():
     assert tonnel_user_id("tonnel", INIT_DATA) == 777
     with pytest.raises(Exception, match="ID пользователя"):
         tonnel_user_id("tonnel", "query_id=1")
+
+
+# ------------------------------------------------------------------ Portals: новый формат collections/filters
+
+from giftbot.markets.portals import parse_filter_models  # noqa: E402
+
+NEW_FILTERS = {
+    "collections": {
+        "toybear": {
+            "models": [
+                {"name": "Wizard", "floor_price": "12.5", "rarity_per_mille": 15, "count": 7, "photo_url": ""},
+                {"name": "Pilot (2%)", "floor_price": None, "rarity_per_mille": 20, "count": 0, "photo_url": ""},
+            ],
+            "symbols": [],
+            "backdrops": [],
+        }
+    },
+    "collection_photo_url": {"toybear": ""},
+    "collection_floor_price": {"toybear": "9.5"},
+}
+
+
+def test_portals_new_filters_format_is_parsed():
+    models = parse_filter_models("portals", NEW_FILTERS, "toybear")
+    assert models == {"wizard": ("Wizard", 12.5), "pilot": ("Pilot", None)}
+    # старый формат по-прежнему понимаем
+    assert parse_filter_models("portals", FILTERS, "toybear")["wizard"] == ("Wizard", 12.5)
+    assert parse_filter_models("portals", NEW_FILTERS, "unknown") == {}
+
+
+def test_portals_unknown_model_fields_are_named_in_the_error():
+    data = {"collections": {"toybear": {"models": [{"label": "Wizard", "cost": "1"}] * 3}}}
+    with pytest.raises(SchemaError, match="cost, label"):
+        parse_filter_models("portals", data, "toybear")
+    with pytest.raises(SchemaError, match="поля ответа: something"):
+        parse_filter_models("portals", {"something": {}}, "toybear")
+
+
+def test_portals_adapter_reads_new_filters_format():
+    adapter, _ = portals(
+        [
+            ("GET", "collections/filters", NEW_FILTERS),
+            ("GET", "collections?", COLLECTIONS),
+            ("GET", "nfts/search", {"results": [portals_nft("n1", 12.5)]}),
+        ]
+    )
+    run(adapter.refresh())
+    assert run(adapter.model_floor(KEY)).price == 12.5
+    assert [i.listing_id for i in run(adapter.cheapest(KEY, 6))] == ["n1"]
+
+
+def test_portals_thin_collection_keeps_models_without_listings():
+    # у модели без лотов Portals не присылает floor_price вовсе
+    data = {"collections": {"toybear": {"models": [
+        {"name": "Wizard", "floor_price": "12.5", "supply": 100},
+        {"name": "Pilot", "supply": 50},
+        {"name": "Ghost", "supply": 40},
+        {"name": "Witch", "supply": 30},
+    ]}}}
+    models = parse_filter_models("portals", data, "toybear")
+    assert models == {"wizard": ("Wizard", 12.5), "pilot": ("Pilot", None), "ghost": ("Ghost", None),
+                      "witch": ("Witch", None)}
+
+
+def test_portals_buy_refused_with_http_200_is_a_rejection():
+    refusal = {"total_purchased": 0, "total_failed": 1,
+               "purchase_results": [{"status": "failed", "reason": "INSUFFICIENT_BALANCE"}]}
+    adapter, _ = portals([("POST", "nfts", refusal)])
+    with pytest.raises(BuyRejected, match="INSUFFICIENT_BALANCE"):
+        run(adapter.buy(Listing("portals", "n1", "Toy Bear", "Wizard", 12.3, 7)))
+    adapter, _ = portals([("POST", "nfts", {"total_purchased": 1, "total_failed": 0, "purchase_results": []})])
+    run(adapter.buy(Listing("portals", "n1", "Toy Bear", "Wizard", 12.3, 7)))  # успех — без ошибки
+
+
+def test_tonnel_model_without_rarity_in_stats_is_searched_by_prefix():
+    from giftbot.markets.tonnel import model_filter
+
+    assert model_filter("Wizard (1.5%)") == "Wizard (1.5%)"
+    regex = model_filter("Ghost")["$regex"]
+    import re as _re
+    assert _re.match(regex, "Ghost (1.5%)") and _re.match(regex, "Ghost") and not _re.match(regex, "Ghostly (2%)")
+    stats = {"status": "success", "data": {"Toy Bear_Wizard": {"floorPrice": 11, "howMany": 7}}}
+    adapter, http = tonnel([("POST", "filterStats", stats), ("POST", "pageGifts", [tonnel_gift(101, 11)])])
+    run(adapter.refresh())
+    [item] = run(adapter.cheapest(KEY, 6))  # лот с «Wizard (1.5%)» найден по «Wizard»
+    assert item.listing_id == "101"
+    assert json.loads(http.calls[-1][2]["filter"])["model"] == {"$regex": "^Wizard( \\(|$)"}
+
+
+def test_portals_collection_without_listings_is_not_a_format_change():
+    unpriced = {"collections": {"durovscap": {"models": [{"name": "Royal", "supply": 3}, {"name": "Black", "supply": 2}]}}}
+    # у коллекции нет лотов — модели без цены нормальны
+    assert parse_filter_models("portals", unpriced, "durovscap", expect_prices=False) == {
+        "royal": ("Royal", None), "black": ("Black", None)}
+    # у коллекции есть лоты, а цены нет ни у одной модели — значит, сменился формат
+    with pytest.raises(SchemaError, match="ни у одной модели"):
+        parse_filter_models("portals", unpriced, "durovscap")
+    adapter, _ = portals([("GET", "collections/filters", unpriced), ("GET", "collections?", COLLECTIONS)])
+    run(adapter.refresh())  # в COLLECTIONS у Durov's Cap floor_price = None
+    assert run(adapter.model_floor(("durov's cap", "royal"))) is None

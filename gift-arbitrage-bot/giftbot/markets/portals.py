@@ -165,9 +165,14 @@ class PortalsAdapter(MarketAdapter):
     async def buy(self, listing: Listing) -> None:
         payload = {"nft_details": [{"id": listing.listing_id, "price": format_price(listing.price)}]}
         try:
-            await self._post("nfts", payload)
+            data = await self._post("nfts", payload)
         except HttpError as exc:  # 4xx: площадка отказала, покупка не прошла
             raise BuyRejected(self.name, str(exc)) from exc
+        # Отказ может прийти и с кодом 200: {"total_purchased": 0, "purchase_results": [{"reason": ...}]}
+        if isinstance(data, dict) and "total_purchased" in data and not data.get("total_purchased"):
+            results = data.get("purchase_results") or []
+            reasons = [str(r["reason"]) for r in results if isinstance(r, dict) and r.get("reason")]
+            raise BuyRejected(self.name, f"покупка не прошла: {', '.join(reasons) or 'причина не указана'}")
 
     async def owned(self) -> Inventory:
         gifts: list[OwnedGift] = []
@@ -222,20 +227,7 @@ class PortalsAdapter(MarketAdapter):
         if cached and self._clock() - cached[0] < self.models_ttl:
             return cached[1]
         data = await self._get("collections/filters", {"short_names": coll.short_name})
-        if not isinstance(data, dict) or not isinstance(data.get("floor_prices"), dict):
-            raise SchemaError(self.name, "collections/filters: нет floor_prices в ответе")
-        entry = data["floor_prices"].get(coll.short_name)
-        models: dict[str, tuple[str, float | None]] = {}
-        if entry is not None:
-            raw_models = entry.get("models") if isinstance(entry, dict) else None
-            if not isinstance(raw_models, dict):
-                raise SchemaError(self.name, "collections/filters: нет списка моделей")
-            for raw_name, raw_price in raw_models.items():
-                try:
-                    price = as_price(self.name, raw_price, f"флор модели {raw_name}")
-                except SchemaError:
-                    price = None  # у модели нет лотов, но имя нужно для запроса вживую
-                models[normalize(raw_name)] = (strip_rarity(raw_name), price)
+        models = parse_filter_models(self.name, data, coll.short_name, expect_prices=coll.floor is not None)
         self._models[normalize(coll.name)] = (self._clock(), models)
         return models
 
@@ -291,6 +283,63 @@ class PortalsAdapter(MarketAdapter):
             symbol=symbol,
             locked_until=locked,
         )
+
+
+# Поля модели в новом формате collections/filters. Точные названия Portals не публикует —
+# берём первое найденное; если не нашлось ни одного, ошибка перечислит реальные поля объекта.
+MODEL_NAME_KEYS = ("name", "value", "model", "title")
+MODEL_PRICE_KEYS = ("floor_price", "floor", "min_price", "floorPrice", "price")
+
+
+def parse_filter_models(
+    market: str, data: Any, short_name: str, *, expect_prices: bool = True
+) -> dict[str, tuple[str, float | None]]:
+    """Модели коллекции из ответа collections/filters: нормализованное имя -> (как пишет Portals, флор или None).
+
+    Старый формат (как в aportalsmp 1.3): {"floor_prices": {"<short_name>": {"models": {"Wizard": "12.5"}}}}.
+    Новый формат: {"collections": {"<short_name>": {"models": [{...}, ...], ...}}, "collection_floor_price": ...}.
+    expect_prices=False — у коллекции сейчас нет лотов, и модели без цены там нормальны.
+    """
+    if not isinstance(data, dict):
+        raise SchemaError(market, f"collections/filters: ожидался объект, пришло {type(data).__name__}")
+    block = next((data[k] for k in ("collections", "floor_prices") if isinstance(data.get(k), dict)), None)
+    if block is None:
+        raise SchemaError(market, f"collections/filters: нет списка коллекций (поля ответа: {', '.join(list(data)[:10])})")
+    entry = block.get(short_name)
+    if entry is None:
+        return {}  # о коллекции Portals ничего не сообщил
+    raw_models = entry.get("models") if isinstance(entry, dict) else None
+    if isinstance(raw_models, dict):
+        pairs = list(raw_models.items())
+    elif isinstance(raw_models, list):
+        # У модели без лотов поля с ценой нет вовсе. Формат сменился, только если у коллекции есть лоты,
+        # а цены нет ни у одной модели
+        if expect_prices and raw_models and not any(isinstance(i, dict) and any(k in i for k in MODEL_PRICE_KEYS) for i in raw_models):
+            first = raw_models[0]
+            fields = ", ".join(sorted(map(str, first))) if isinstance(first, dict) else type(first).__name__
+            raise SchemaError(market, f"модели: не нашёл цену ни у одной модели (поля: {fields})")
+        pairs = parse_items(market, raw_models, lambda item: _model_pair(market, item), "модели коллекции")
+    else:
+        raise SchemaError(market, "collections/filters: нет списка моделей")
+    models: dict[str, tuple[str, float | None]] = {}
+    for raw_name, raw_price in pairs:
+        try:
+            price = as_price(market, raw_price, f"флор модели {raw_name}")
+        except SchemaError:
+            price = None  # у модели нет лотов, но имя нужно для запроса вживую
+        models[normalize(raw_name)] = (strip_rarity(raw_name), price)
+    return models
+
+
+def _model_pair(market: str, item: Any) -> tuple[str, Any]:
+    if not isinstance(item, dict):
+        raise SchemaError(market, f"модель: ожидался объект, пришло {type(item).__name__}")
+    fields = ", ".join(sorted(map(str, item)))
+    name = next((item[k] for k in MODEL_NAME_KEYS if isinstance(item.get(k), str) and item[k].strip()), None)
+    if name is None:
+        raise SchemaError(market, f"модель: не нашёл название среди полей {fields}")
+    price_key = next((k for k in MODEL_PRICE_KEYS if k in item), None)
+    return name, item[price_key] if price_key else None  # нет цены — у модели сейчас нет лотов
 
 
 def _amount(market: str, value: Any, what: str) -> float:

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit
@@ -31,6 +32,21 @@ WEBAPPS = {
 
 class AuthSetupError(Exception):
     pass
+
+
+CONNECT_TIMEOUT = 60.0  # без ограничения Telethon ждёт вечно, если сеть глушит Telegram после соединения
+
+
+async def connect(client) -> None:
+    """Подключает клиент Telethon. AuthSetupError — если связи с Telegram нет."""
+    try:
+        await asyncio.wait_for(client.connect(), CONNECT_TIMEOUT)
+    except (asyncio.TimeoutError, OSError) as exc:
+        await client.disconnect()
+        raise AuthSetupError(
+            f"Нет связи с Telegram ({type(exc).__name__}). Проверьте интернет на сервере "
+            "(настройка PROXY на связь с Telegram-аккаунтом не влияет)"
+        ) from exc
 
 
 def extract_init_data(url: str) -> str:
@@ -62,17 +78,33 @@ class AuthProvider:
         self._cfg.require("api_id", "api_hash")
         from telethon import TelegramClient
 
-        self._client = TelegramClient(str(self._cfg.session_path), self._cfg.api_id, self._cfg.api_hash)
-        await self._client.connect()
+        # входящие обновления аккаунта боту не нужны: без них меньше записей в сессию и поводов для разрыва
+        self._client = TelegramClient(
+            str(self._cfg.session_path), self._cfg.api_id, self._cfg.api_hash, receive_updates=False
+        )
+        try:
+            await connect(self._client)
+        except AuthSetupError:
+            self._client = None
+            raise
         if not await self._client.is_user_authorized():
             await self._client.disconnect()
-            raise AuthSetupError("Telegram-аккаунт не авторизован. Сначала выполните: python -m giftbot login")
+            raise AuthSetupError(
+                "Telegram-аккаунт не авторизован. Сначала выполните: python -m giftbot login "
+                "(на сервере после install.sh — запустите install.sh ещё раз)"
+            )
 
     async def get(self, market: str) -> str:
         if market in self._overrides:
             return self._overrides[market]
         if self._client is None:
             raise AuthError(market, "клиент Telegram не запущен")
+        if not self._client.is_connected():
+            # Telethon бросает переподключение после нескольких неудач — иначе вход не обновится до перезапуска
+            try:
+                await connect(self._client)
+            except AuthSetupError as exc:
+                raise AuthError(market, str(exc)) from exc
         app = WEBAPPS[market]
         try:
             init_data = await self._request(app)

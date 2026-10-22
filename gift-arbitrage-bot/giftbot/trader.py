@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING
 
 from .config import Config
 from .evaluator import Deal
-from .markets.base import AuthError, BuyRejected, MarketAdapter, MarketError
+from .markets.base import AuthError, Blocked, BuyRejected, MarketAdapter, MarketError
 from .models import Listing, OwnedGift
 from .store import OPEN_STATUSES, SPENT_STATUSES, STATUS_NAMES, Position
+from .ui import Button, Reply
 
 if TYPE_CHECKING:
     from .scanner import Scanner
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DAY = 86400.0
+MAX_POSITION_BUTTONS = 20  # столько позиций показываем с кнопкой «Закрыть», остальные — командой /forget
 
 
 def esc(value: object) -> str:
@@ -76,10 +78,11 @@ class Trader:
         return self.scanner.adapters[market]
 
     def _title(self, market: str) -> str:
-        return self._adapter(market).title
+        adapter = self.scanner.adapters.get(market)  # площадку могли убрать из MARKETS, а позиции на ней остались
+        return adapter.title if adapter else market
 
-    async def notify(self, text: str) -> None:
-        await self.scanner.bot.send(text)
+    async def notify(self, text: str, buttons: tuple[tuple[Button, ...], ...] = ()) -> None:
+        await self.scanner.bot.send(text, buttons=buttons)
 
     async def notify_once(self, key: str, text: str, every: float = 3600.0) -> None:
         """Одно и то же предупреждение — не чаще раза в час."""
@@ -231,6 +234,12 @@ class Trader:
         failure: str | None = None
         try:
             await self._trade(market, self._adapter(market).buy, item)
+        except Blocked as error:  # Cloudflare не пропустил запрос: до площадки он не дошёл, денег не тронули
+            self.store.update_position(position_id, status="failed", note=str(error)[:500])
+            await self.notify(f"↩️ Не купилось #{position_id}: {name} — Cloudflare заблокировал запрос. Деньги не списаны.")
+            if self.scanner.health[market].fail(error, self.scanner.clock()):
+                await self.scanner._notify_trip(market, error)  # остановит площадку и выключит автопокупку
+            return None
         except (BuyRejected, AuthError) as error:
             self.store.update_position(position_id, status="failed", note=str(error)[:500])
             await self.notify(
@@ -254,7 +263,8 @@ class Trader:
             await self.notify(
                 f"⚠️ <b>Покупка #{position_id}: {what}</b>\n{name} за {ton(deal.cost)} TON на {title}.\n\n"
                 "Проверьте инвентарь и баланс вручную. Автопокупка выключена — включить: /autobuy on.\n"
-                f"Бот продолжит искать подарок в инвентаре. Если разобрались сами: /forget {position_id}"
+                f"Бот продолжит искать подарок в инвентаре. Если разобрались сами: /forget {position_id}",
+                buttons=((("📦 Позиции", "+/positions"), ("🤖 Автопокупка", "+/autobuy")),),
             )
             return position_id
 
@@ -448,35 +458,94 @@ class Trader:
         if not positions:
             return "Открытых позиций нет."
         lines = ["<b>Открытые позиции</b>"]
-        for p in positions:
+        for p in positions[:MAX_POSITION_BUTTONS]:
             line = f"#{p.id} {esc(p.title())} · {self._title(p.buy_market)} · {STATUS_NAMES[p.status]}"
             line += f" · куплено за {ton(p.cost)}"
             if p.list_price:
                 line += f", выставлено за {ton(p.list_price)}"
             lines.append(line)
-        lines.append("\nЗакрыть позицию, если разобрались вручную: /forget номер")
+        if len(positions) > MAX_POSITION_BUTTONS:
+            lines.append(f"…и ещё {len(positions) - MAX_POSITION_BUTTONS}: закрыть можно командой /forget номер")
+        lines.append("\nЗакрыть позицию, если разобрались вручную: кнопка ниже или /forget номер")
         return "\n".join(lines)
 
-    async def on_command(self, command: str, args: list[str]) -> str | None:
+    # ------------------------------------------------------------ панели с кнопками
+
+    def panel(self, note: str = "") -> Reply:
+        """Состояние автопокупки с кнопками. note — строка о только что сделанном."""
+        text = self.status_text()
+        refresh: Button = ("🔄 Обновить", "/autobuy")
+        if not self.ab.enabled:
+            buttons: tuple[tuple[Button, ...], ...] = ((refresh,),)
+        elif self.armed:
+            buttons = ((("⏹ Выключить", "/autobuy off"), refresh), (("📦 Позиции", "+/positions"),))
+        else:
+            # live: подтверждение приходит отдельным сообщением, двойное нажатие его не проскочит;
+            # «Включить» стоит там, где у включённой автопокупки «Обновить», а не «Выключить»
+            enable = "+/autobuy ask" if self.ab.mode == "live" else "/autobuy on"
+            buttons = ((refresh, ("✅ Включить", enable)), (("📦 Позиции", "+/positions"),))
+        return Reply(f"{note}\n\n{text}" if note else text, buttons)
+
+    def confirm_arm(self) -> Reply:
+        """Реальные покупки включаются только после второго нажатия — в отдельном сообщении."""
+        return Reply(
+            "⚠️ <b>Включить автопокупку в режиме live?</b>\n"
+            f"Бот будет сам покупать подарки за реальные TON: до {ton(self.ab.max_price)} TON за лот, "
+            f"до {ton(self.ab.daily_limit)} TON и {self.ab.max_per_day} покупок за сутки, "
+            f"не больше {self.ab.max_open} непроданных.",
+            ((("Отмена", "/autobuy"),), (("✅ Да, включить", "/autobuy on"),)),
+        )
+
+    def positions_panel(self, note: str = "") -> Reply:
+        """Открытые позиции, у каждой кнопка «Закрыть» (подтверждение придёт отдельным сообщением)."""
+        rows: list[tuple[Button, ...]] = [
+            ((f"🗑 Закрыть #{p.id}", f"+/forget ask {p.id}"),)
+            for p in self.store.positions(OPEN_STATUSES)[:MAX_POSITION_BUTTONS]
+        ]
+        rows.append((("🔄 Обновить", "/positions"),))
+        text = self.positions_text()
+        return Reply(f"{note}\n\n{text}" if note else text, tuple(rows))
+
+    def _open_position(self, raw: str) -> tuple[Position | None, str]:
+        """Открытая позиция по номеру из команды или причина, почему её нет."""
+        raw = raw.lstrip("#")
+        if not raw.isdigit():
+            return None, "Укажите номер позиции: /forget 12"
+        position = self.store.get_position(int(raw))
+        if position is None:
+            return None, f"Позиция #{raw} не найдена."
+        if position.status not in OPEN_STATUSES:
+            return None, f"Позиция #{raw} уже закрыта ({STATUS_NAMES.get(position.status, position.status)})."
+        return position, ""
+
+    async def on_command(self, command: str, args: list[str]) -> str | Reply | None:
         if command == "/autobuy":
             sub = args[0].lower() if args else ""
             if sub in ("on", "вкл"):
-                return await self.arm()
+                return Reply(await self.arm(), self.panel().buttons)
             if sub in ("off", "выкл"):
                 self.disarm("выключена командой")
-                return "⏹ Автопокупка выключена."
-            return self.status_text()
+                return self.panel("⏹ Автопокупка выключена.")
+            if sub == "ask":  # кнопка «Включить»: в live сначала спрашиваем подтверждение
+                if self.ab.mode == "live" and not self.armed:
+                    return self.confirm_arm()
+                if self.ab.mode == "dry" and not self.armed:
+                    return Reply(await self.arm(), self.panel().buttons)
+            return self.panel()
         if command == "/positions":
-            return self.positions_text()
+            return self.positions_panel()
         if command == "/forget":
-            raw = args[0].lstrip("#") if args else ""
-            if not raw.isdigit():
-                return "Укажите номер позиции: /forget 12"
-            position = self.store.get_position(int(raw))
+            ask = bool(args) and args[0].lower() == "ask"  # кнопка «Закрыть»: сначала подтверждение
+            rest = args[1:] if ask else args
+            position, problem = self._open_position(rest[0] if rest else "")
             if position is None:
-                return f"Позиция #{raw} не найдена."
-            if position.status not in OPEN_STATUSES:
-                return f"Позиция #{raw} уже закрыта ({STATUS_NAMES.get(position.status, position.status)})."
+                return self.positions_panel(problem)
+            if ask:
+                return Reply(
+                    f"Закрыть позицию #{position.id} — {esc(position.title())}?\n"
+                    "Бот перестанет следить за этим подарком. С самим подарком на площадке ничего не произойдёт.",
+                    ((("Отмена", "/positions"),), (("✅ Да, закрыть", f"/forget {position.id}"),)),
+                )
             self.store.update_position(position.id, status="closed", note="закрыта вручную")
-            return f"Позиция #{raw} закрыта."
+            return self.positions_panel(f"Позиция #{position.id} закрыта.")
         return None

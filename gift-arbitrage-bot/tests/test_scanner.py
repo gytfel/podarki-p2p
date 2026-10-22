@@ -6,12 +6,18 @@ from conftest import FakeAdapter, FakeAuth, FakeBot, lot, make_config
 from giftbot.markets.base import AuthError, SchemaError, TransportError
 from giftbot.models import ModelFloor
 from giftbot.scanner import Scanner, listing_gone
+from giftbot.ui import reply_text
 
 KEY = ("toy bear", "wizard")
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def cmd(world, command, args=()):
+    """Текст ответа на команду (кнопки проверяются отдельно)."""
+    return reply_text(run(world.scanner.on_command(command, list(args))))
 
 
 class World:
@@ -100,7 +106,7 @@ def test_same_market_snipe(world):
     [message] = world.bot.sent
     assert "внутри Portals" in message
     assert "Перенос" not in message
-    assert "самый дешёвый сейчас 12.00, лотов: 3" in message
+    assert "самый дешёвый «Wizard» сейчас 12.00, проверено лотов этой модели: 3" in message
 
 
 def test_same_market_snipe_when_cached_floor_is_the_listing_itself(world):
@@ -112,7 +118,7 @@ def test_same_market_snipe_when_cached_floor_is_the_listing_itself(world):
 
     [message] = world.bot.sent
     assert "внутри Portals" in message
-    assert "самый дешёвый сейчас 12.00, лотов: 3" in message
+    assert "самый дешёвый «Wizard» сейчас 12.00, проверено лотов этой модели: 3" in message
 
 
 def test_own_floor_with_too_few_listings_is_not_checked_live(world):
@@ -210,21 +216,21 @@ def test_probe_waits_for_resume_when_auto_resume_off(store):
     run(world.scanner.poll_once("portals"))
     assert world.scanner.health["portals"].tripped
     assert "/resume" in world.bot.sent[-1]
-    reply = run(world.scanner.on_command("/resume", []))
+    reply = cmd(world, "/resume")
     assert "Снова включены: Portals" in reply
     assert not world.scanner.health["portals"].tripped
 
 
 def test_pause_and_status_commands(world):
-    assert "паузе" in run(world.scanner.on_command("/pause", []))
+    assert "паузе" in cmd(world, "/pause")
     run(world.scanner.poll_once("portals"))
     assert world.portals.calls == []
     assert "На паузе" in world.scanner.status_text()
-    run(world.scanner.on_command("/resume", []))
+    cmd(world, "/resume")
     run(world.scanner.poll_once("portals"))
     assert world.portals.calls == ["latest"]
-    assert "Неизвестная команда" in run(world.scanner.on_command("/buy", []))
-    assert "Tonnel: покупка +10.0%" in run(world.scanner.on_command("/settings", []))
+    assert "Неизвестная команда" in cmd(world, "/buy")
+    assert "Tonnel: покупка +10.0%" in cmd(world, "/settings")
 
 
 def test_names_are_escaped_in_messages(world):
@@ -279,3 +285,50 @@ def test_run_loop_starts_polls_and_stops_cleanly(store):
     assert any("Выгодный лот" in m for m in world.bot.sent)
     assert world.bot.sent[-1] == "⏹ Сканер остановлен."
     assert world.tonnel.calls.count("latest") >= 3
+
+
+def test_cloudflare_block_stops_market_at_once_without_relogin(world):
+    from giftbot.markets.base import Blocked
+
+    world.tonnel.errors = [Blocked("tonnel", "HTTP 403: Cloudflare")]
+    run(world.scanner.poll_once("tonnel"))
+    assert world.scanner.health["tonnel"].tripped
+    assert world.auth.count == 0  # вход из Telegram не дёргали
+    assert "TONNEL_PROXY" in world.bot.sent[-1]
+
+
+def test_failed_probes_back_off(world):
+    from giftbot.markets.base import Blocked
+
+    world.tonnel.errors = [Blocked("tonnel", "x")] * 3
+    run(world.scanner.poll_once("tonnel"))  # остановка
+    world.now[0] += 301
+    run(world.scanner.poll_once("tonnel"))  # проба 1 не прошла
+    assert world.scanner.health["tonnel"].failed_probes == 1
+    calls = len(world.tonnel.calls)
+    world.now[0] += 301
+    run(world.scanner.poll_once("tonnel"))  # через 5 минут ещё рано: теперь ждём 10
+    assert len(world.tonnel.calls) == calls
+    world.now[0] += 300
+    run(world.scanner.poll_once("tonnel"))
+    assert world.scanner.health["tonnel"].failed_probes == 2
+    assert world.auth.count == 2  # вход обновляется на каждой пробе: за часы блокировки он устаревает
+
+
+def test_ordinary_outage_is_probed_at_fixed_interval(world):
+    world.tonnel.errors = [TransportError("tonnel", "timeout")] * 5
+    for _ in range(3):
+        run(world.scanner.poll_once("tonnel"))  # три ошибки подряд — остановка
+    for _ in range(2):  # пробы не прошли, но это не блокировка — интервал не растёт
+        world.now[0] += 301
+        run(world.scanner.poll_once("tonnel"))
+    assert world.scanner.probe_interval("tonnel") == 300
+
+
+def test_probe_back_off_has_a_ceiling(world):
+    from giftbot.markets.base import Blocked
+
+    health = world.scanner.health["tonnel"]
+    health.last_error = Blocked("tonnel", "x")
+    health.failed_probes = 5000  # полтора месяца неудачных проб — без переполнения
+    assert world.scanner.probe_interval("tonnel") == 3600

@@ -80,6 +80,80 @@ def test_extract_init_data_from_webapp_url():
         extract_init_data("https://example.com/#nothing=1")
 
 
+def test_connect_gives_up_when_telegram_does_not_answer(monkeypatch):
+    import giftbot.auth as auth
+
+    monkeypatch.setattr(auth, "CONNECT_TIMEOUT", 0.05)
+
+    class Hanging:  # соединение есть, ответа нет — так выглядит заглушённый Telegram
+        disconnected = False
+
+        async def connect(self):
+            await asyncio.sleep(3600)
+
+        async def disconnect(self):
+            self.disconnected = True
+
+    client = Hanging()
+    with pytest.raises(auth.AuthSetupError, match="Нет связи с Telegram"):
+        run(auth.connect(client))
+    assert client.disconnected
+
+
+def test_auth_reconnects_after_telegram_dropped_connection(monkeypatch):
+    from giftbot.auth import AuthProvider
+    from conftest import make_config
+
+    class Dropped:  # Telethon перестал переподключаться сам
+        connected = False
+
+        def is_connected(self):
+            return self.connected
+
+        async def connect(self):
+            self.connected = True
+
+    provider = AuthProvider(make_config())
+    provider._client = Dropped()
+
+    async def fake_request(app):
+        return "query_id=1"
+
+    monkeypatch.setattr(provider, "_request", fake_request)
+    assert run(provider.get("portals")) == "tma query_id=1"
+    assert provider._client.connected
+
+
+def test_login_phone_prompt_rejects_bot_token(monkeypatch, capsys):
+    from giftbot.__main__ import ask_phone
+
+    answers = iter(["123456789:AAAbbbcccdddeeefffggghhhiiijjjkkklll", "+7 999 123-45-67"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    assert ask_phone() == "+7 999 123-45-67"
+    assert "не токен бота" in capsys.readouterr().out
+
+
+def test_login_phone_without_country_code_gets_a_hint(monkeypatch, capsys):
+    from giftbot.__main__ import ask_phone
+
+    # без «+» Telegram прочитал бы 964… как код Ирака и ответил PhoneNumberInvalid
+    answers = iter(["964 856 63 84", "8 964 856 63 84", "+7 964 856 63 84"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    assert ask_phone() == "+7 964 856 63 84"
+    assert capsys.readouterr().out.count("введите: +79648566384") == 2
+
+
+def test_ctrl_c_is_not_reported_as_success(monkeypatch, tmp_path):
+    import giftbot.__main__ as cli
+
+    async def interrupted(cfg):
+        raise KeyboardInterrupt
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setitem(cli.COMMANDS, "check", interrupted)
+    assert cli.main(["check", "--env", str(tmp_path / "missing.env")]) == 130
+
+
 def test_manual_auth_gets_portals_prefix():
     assert normalize_override("portals", "query_id=1") == "tma query_id=1"
     assert normalize_override("portals", "tma query_id=1") == "tma query_id=1"
@@ -165,3 +239,30 @@ def test_scanner_on_tonnel_only_starts_with_autobuy_off(env):
     cfg = load_config(path)
     assert cfg.markets == ("tonnel",)
     assert cfg.autobuy.markets == ()
+
+
+def test_per_market_proxy_overrides_common_proxy(env):
+    monkeypatch, path = env
+    monkeypatch.setenv("PROXY", "http://common:1")
+    monkeypatch.setenv("TONNEL_PROXY", "http://resi:2")
+    monkeypatch.delenv("PORTALS_PROXY", raising=False)
+    cfg = load_config(path)
+    assert cfg.proxy_for("tonnel") == "http://resi:2"
+    assert cfg.proxy_for("portals") == "http://common:1"
+
+
+def test_tonnel_stats_url_defaults_to_gifts2_and_keeps_explicit_value(env):
+    monkeypatch, path = env
+    monkeypatch.delenv("TONNEL_STATS_URL", raising=False)
+    assert load_config(path).tonnel_stats_url == "https://gifts2.tonnel.network/api/filterStats"
+    monkeypatch.setenv("TONNEL_STATS_URL", "https://gifts3.tonnel.network/api/filterStats")  # выбрали сами — не трогаем
+    assert load_config(path).tonnel_stats_url == "https://gifts3.tonnel.network/api/filterStats"
+
+
+def test_tonnel_is_polled_less_often_by_default(env):
+    monkeypatch, path = env
+    monkeypatch.delenv("TONNEL_POLL_INTERVAL_SEC", raising=False)
+    cfg = load_config(path)
+    assert cfg.poll_interval_for("tonnel") == 30 and cfg.poll_interval_for("portals") == cfg.poll_interval
+    monkeypatch.setenv("POLL_INTERVAL_SEC", "60")  # общий интервал медленнее — Tonnel не опрашиваем чаще него
+    assert load_config(path).poll_interval_for("tonnel") == 60
